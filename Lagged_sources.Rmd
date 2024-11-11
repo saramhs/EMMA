@@ -27,8 +27,8 @@ opts_chunk$set(comment="", message = FALSE, echo=FALSE, error=FALSE, warning=FAL
 
 
 ```{r directorySetup,comment=FALSE, message = FALSE, echo=FALSE,warning=FALSE}
-dataFolder   <- file.path("/Users/mohan197/EMMA_Marcell/Directory/Data/") # Set path to the data and figure folder
-figureFolder <- file.path("/Users/mohan197/EMMA_Marcell/Directory/Figures/")
+dataFolder   <- file.path("/Users/mohan197/EMMA_Marcell/Directory/Data/") # Set path to the data  folder
+figureFolder <- file.path("/Users/mohan197/EMMA_Marcell/Directory/Figures/")#Set path to figure folder
 RFolder      <- file.path("/Users/mohan197/EMMA_Marcell/Directory/RScripts/") # Set the path to the RScript folder
 csvFolder<-file.path("/Users/mohan197/EMMA_Marcell/Directory/CSV/")
 # Load the R libraries
@@ -144,7 +144,7 @@ daily_avg<-function(df){
 #Ph
 transform_ph<-function(df){
   #the negative logarithm (base 10) of the concentration of hydrogen ions in a solution
-  #convert pH back to concentration, you would use the inverse of the logarithmic function,which is the exponentiation function.
+  #convert pH back to concentration
   df<-mutate(df,h_ion = 10^(-ph))
   return(df)
 }
@@ -165,8 +165,6 @@ rm_columns<-function(df){
 ``` {r data_correction, echo=FALSE}
 grab_weir<-grab
 lagg_pool<-lagg
-#rm(grab)
-#rm(lagg)
 
 dataframes<- list(runoff,event_precip,grab_weir,lagg_pool,bog_pore_week,lagg_pore_week,snow_timing)
 
@@ -529,10 +527,6 @@ library(ggplot2)
 library(dplyr)
 library(broom)
 
-#residual2_combined_stf_edited<-residual2_combined_stf %>%
-#  filter(mn_residual <= -0.005)
-
-#residual1_combined_stf<-residual2_combined_stf_edited
 
 c_stf <- "toc_stf"
 c_residual <- "toc_residual"
@@ -607,67 +601,6 @@ print(p)
 
 
 ```
-
-
-```{r }
-library(dplyr)
-library(broom)
-
-season_lm <- residual2_combined_stf %>%
-  group_by(season_stf) %>%
-  do({
-    # Fit the model
-    model <- lm(reformulate(c_stf, c_residual), data = .)
-    
-    # Tidy and glance the model
-    tidy_model <- broom::tidy(model)
-    glance_model <- broom::glance(model)
-    
-    # Print intermediate outputs for debugging
-    print(paste("Season:", unique(.$season_stf)))
-    print(tidy_model)
-    print(glance_model)
-    
-    # Return a tibble with the model, tidy_model, and glance_model
-    tibble(
-      model = list(model),
-      tidy_model = list(tidy_model),
-      glance_model = list(glance_model)
-    )
-  }) %>%
-  mutate(
-    intercept = sapply(tidy_model, function(x) {
-      print("Intercept calculation")
-      print(x)
-      x$estimate[1]
-    }),
-    slope = sapply(tidy_model, function(x) {
-      print("Slope calculation")
-      print(x)
-      x$estimate[2]
-    }),
-    r_squared = sapply(glance_model, function(x) {
-      print("R-squared calculation")
-      print(x)
-      x$r.squared
-    }),
-    p_value = sapply(glance_model, function(x) {
-      print("P-value calculation")
-      print(x)
-      x$p.value
-    }),
-    eq_label = paste0(
-      "β = ", round(slope, 2), ", ",
-      "R² = ", round(r_squared, 2), ", ",
-      ifelse(p_value < 0.05, "p < 0.05", paste0("p = ", format(p_value, scientific = TRUE, digits = 2)))
-    )
-  )
-
-# Print the final output for verification
-print(season_lm)
-
-```
-
 
 
 ``` {r c-q plots_ready data}
@@ -809,11 +742,6 @@ p <- ggplot(stream_slct_withq_2011_logged %>%
 
 ```{r time series _ data prepare}
 library("lubridate")
-
-#selecting<-function(df){
-#  df<-dplyr::select(df,date,DoY,name,cl, so4, ca, k , mg, na, al, fe, mn,si,sr,srp, tn, tn, toc)
-#  return(df)
-#}
 
 yr<-2011
 stream_slct_yr <-stream_slct%>% filter(year(date) == yr)%>%mutate(DoY=yday(date))%>%mutate(name=1)
@@ -1334,13 +1262,7 @@ data_mixing_space<-stream_yr_restmelt[, !(names(stream_yr_restmelt) %in% c("date
   stf_dormant_projection<-data.frame(std_stf_dormant_mtx %*% t(V)) 
   stf_growing_projection<-data.frame(std_stf_growing_mtx %*% t(V)) 
    
-   
-  #sub_projection_big<-which(sub_projection$X1 > 20)
-  #sub_projection_rmdbig<-sub_projection %>% filter(row_number() != sub_projection_big)
-  
-  
-  #lagg_projection_big<-which(lagg_projection$X1 > 15)
-  #lagg_projection_rmdbig<-lagg_projection %>% filter(row_number() != lagg_projection_big)
+ 
   
   #In the mixing space, use the V_named to draw the arrows,
   #each column will be one arrow with the first row (coordiante along pc1) being the x of the endpoint and the second row being the y of the endpoint
@@ -1493,10 +1415,7 @@ interactive_plot2 <- ggplotly(p, tooltip = "text")%>%
   library (ggrepel)
   x_limits <- c(-8, 6)
   y_limits <- c(-5, 6)
- # c("Freshet" = "skyblue", 
- #                                "rest of Melt" = "blue", 
- #                                "Growing" = "darkgreen", 
-  #                               "Dormant" = "darkgrey")) 
+
 
   # season_shapes<-c()
   p <- ggplot(data = stream_projection_season, aes(x = X1, y = X2)) +
@@ -1810,10 +1729,10 @@ data_mixing_space<-stream_yr_restmelt%>%dplyr::select(-date,-name,-DoY,-season)
 
 ```{r reconstruct_enhanced should run}
 stat <- data.frame(
-  ca =rep(100, 3), #c(100, 100, 100),  
-  mg = rep(100, 3),#c(100, 100, 100), 
-  mn = rep(100, 3),#c(100, 100, 100),  
-  si =rep(100, 3) #c(100, 100, 100)
+  ca =rep(100, 3), 
+  mg = rep(100, 3),
+  mn = rep(100, 3),
+  si =rep(100, 3) 
   )
 
 
@@ -2448,8 +2367,8 @@ for (stf in seq_len(nrow(stream_projection_season))) {
             
               if (any(contributions_lagzero[1:3] < 0)){
                 contributions_lagzero <- adjust_contributions(contributions_lagzero)
-                cont_lagzero[stf,]<-contributions_lagzero
               }
+              cont_lagzero[stf,]<-contributions_lagzero
 }
       
       for (stf in seq_len(nrow(stream_projection_season))) {
@@ -2481,8 +2400,8 @@ for (stf in seq_len(nrow(stream_projection_season))) {
 
 
 ```{r plot prediction vs observed lag zero}
-#col<-1 #ca
-col<-2 #mg
+col<-1 #ca
+#col<-2 #mg
 #col<-3 #mn
 #col<-4 #si
 #col<-5 #cl
@@ -2524,7 +2443,7 @@ plot_data <-plot_data(stf_predicted_lagzero,stream_restmelt,col)
     labs(
    #   x = "Ca (observed)",
     #  y = "Ca (predicted)",
-      title ="Mg", #paste0(names(stf_predicted)[col]), 
+      title ="Ca", #paste0(names(stf_predicted)[col]), 
       x = paste0(names(stf_predicted)[col], " (observed)"),
       y = paste0(names(stf_predicted)[col], " (predicted)"),
       subtitle = paste("\n","  R² =", round(r2, 2), "| p-value ", p_value_text,"| slope=",round(slope,2))
@@ -2650,11 +2569,10 @@ distance<-function(predicted,observed){
 }
 
 min_lookback<-0
-max_lookback<-2 #days
+max_lookback<-30 #days
 
 
 for (stf in seq_len(nrow(stream_proj_df))) {
-
 
    stream_obs<-stream_proj_df[stf,]
    stream_obs_ch<-stream_ch_df[stf,1:4]
@@ -2692,7 +2610,6 @@ for (stf in seq_len(nrow(stream_proj_df))) {
               EM_comb_list[[length(EM_comb_list)+1]]<-EM_comb
               EM_ch_comb_list[[length(EM_ch_comb_list)+1]]<-EM_ch_comb
 
-
               dett <- calculate_determinant(EM1, EM2, EM3)
 
       if (dett == 0) next 
@@ -2702,8 +2619,8 @@ for (stf in seq_len(nrow(stream_proj_df))) {
               if (any(contributions_lookback[1:3] < 0)){
              
                 contributions_lookback <- adjust_contributions(contributions_lookback)
-                cont_comb<-contributions_lookback #num turns into list feature
               }
+               cont_comb<-contributions_lookback #num turns into list feature
 
         for (col in 1:4) {
           stf_predicted_lookback[stf, col] <- cont_comb[1] * EM1_ch[col] + cont_comb[2] * EM2_ch[col] + cont_comb[3] * EM3_ch[col]
@@ -2791,8 +2708,8 @@ for (i in seq_along(cont_opt_stf_list_unique)) {
 
 ```{r plot prediction vs observed model2}
 #col<-1 #ca
-#col<-2 #mg
-col<-3 #mn
+col<-2 #mg
+#col<-3 #mn
 #col<-4 #si
 
 #col<-5 #cl
@@ -2832,7 +2749,7 @@ plot_data <-plot_data(stf_predicted_model2,stream_ch_df,col)
     labs(
    #   x = "Ca (observed)",
     #  y = "Ca (predicted)",
-      title ="Mn", #paste0(names(stf_predicted)[col]), 
+      title ="Mg", #paste0(names(stf_predicted)[col]), 
       x = paste0(names(stream_ch_df)[col], " (observed)"),
       y = paste0(names(stream_ch_df)[col], " (predicted)"),
       subtitle = paste("\n","  R² =", round(r2, 2), "| p-value ", p_value_text,"| slope=",round(slope,2))
