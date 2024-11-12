@@ -1,0 +1,4730 @@
+
+---
+title: "Endmember Mixing Analysis for a Peatland in Northern US"
+author:
+- Sara M.S.^1^
+- ^1^Department of Civil, Environmental, and Geo-Engineering, University of Minnesota, 
+- mohan197@umn.edu
+bibliography: "/Users/mohan197/EMMA_Marcell/Directory/bibliography.bib"
+output:
+  html_document:
+    df_print: paged
+  pdf_document:
+    keep_tex: yes
+csl: "/Users/mohan197/EMMA_Marcell/Directory/taylor-and-francis-harvard-x.csl"
+
+---
+
+```{r setup,comment=FALSE, message = FALSE, echo=FALSE,warning=FALSE}
+rm(list=ls())           # Clean the environment
+options(scipen=6)       # display digits proberly!! not the scientific version
+options(digits.secs=6)  # use milliseconds in Date/Time data types
+options(warning=FALSE)  # don't show warnings
+library(knitr)          # set global knitr options of the document
+# Here we set the R code invisible to not show when the document is rendered
+opts_chunk$set(comment="", message = FALSE, echo=FALSE, error=FALSE, warning=FALSE)
+```
+
+
+```{r directorySetup,comment=FALSE, message = FALSE, echo=FALSE,warning=FALSE}
+dataFolder   <- file.path("/Users/mohan197/EMMA_Marcell/Directory/Data/") # Set path to the data and figure folder
+figureFolder <- file.path("/Users/mohan197/EMMA_Marcell/Directory/Figures/")
+RFolder      <- file.path("/Users/mohan197/EMMA_Marcell/Directory/RScripts/") # Set the path to the RScript folder
+csvFolder<-file.path("/Users/mohan197/EMMA_Marcell/Directory/CSV/")
+# Load the R libraries
+pkgs<-c("dplyr","MASS","lubridate","plyr","reshape2","ggmap","ggplot2","scales","rgdal","tools","plotly","tidyr")
+lapply(pkgs, require, character.only = TRUE) #MASS: #Modern Applied Statistics with S
+```
+
+
+
+
+```{r read_data}
+
+source(file.path(dataFolder, "breakpoint.r"))
+runoff<- read.csv(file.path(dataFolder,"2024.02.27_ROChemistry2009-2011.csv"))
+snow_timing<- read.csv(file.path(dataFolder,"snow_seasons.csv"))
+source(file.path(dataFolder, "all_data.r"))
+source(file.path(dataFolder, "daily_precip.r"))
+stream_signals<-read.csv(file.path(dataFolder,"S2_Stream_signals.csv"))
+wte_signals<-read.csv(file.path(dataFolder,"S2_WTE_signals.csv"))
+
+```
+
+
+
+
+```{r functions, echo=FALSE}
+
+#lowercase the column names 
+lowercase<-function(df){
+  colnames(df)<-tolower(colnames(df))
+  return(df)
+}
+
+#runoff date column has a different name  
+change_column_name <- function(df, old_colname, new_colname) {
+  colnames(df)[which(names(df) == old_colname)] <- new_colname
+  return(df)
+}
+
+# make sure df's date column is of type "date" and is of the same format "year month day" 
+
+date_column_chr<-function (df){
+  df$datetime <- as.POSIXct(strptime(df$datetime, format = "%m/%d/%Y %H:%M")) 
+  return(df)
+}
+
+date_column_chr_nohours<-function (df){
+  df$date <- as.Date(strptime(df$date, format = "%m/%d/%Y"))
+  return(df)
+}
+
+date_column<-function (df){
+  df$date <- as.Date(df$date, format = "%m/%d/%Y %H:%M")
+  return(df)
+}
+
+
+#filter for the shared time 
+
+filter_date <- function(df, start_date, end_date) {
+  filtered_df <- df %>%
+    filter(as.Date(date, format = "%Y-%m-%d") >= as.Date(start_date) &
+             as.Date(date, format = "%Y-%m-%d") <= as.Date(end_date))
+  
+  return(filtered_df)
+}
+
+# separate date and time 
+date_time_separated<-function(df){
+  df$time<-format(as.POSIXct(df$datetime), format = "%H:%M:%S")
+  df$date<-as.Date(as.POSIXct(df$datetime), format = "%m/%d/%Y")
+  return(df)
+}
+
+# Define seasons 
+
+#month, month_name,month_range, season_name
+add_month_season <- function(df) {
+
+  df$date_copied<-df$date
+  df$date<-as.Date(df$date,format="%Y-%m-%d") #this is only for Contributions #"%m-%d-%Y") THIS IS FOR ALL OTHER DATA
+  df$date<-as.Date(df$date,format="%Y-%m-%d")
+  #create month column
+  df$month <- lubridate::month(df$date)
+  #create month name
+  df$month_name <- case_when(
+    df$month == 1 ~ "January",
+    df$month == 2 ~ "February",
+    df$month == 3 ~ "March",
+    df$month == 4 ~ "April",
+    df$month == 5 ~ "May",
+    df$month == 6 ~ "June",
+    df$month == 7 ~ "July",
+    df$month == 8 ~ "August",
+    df$month == 9 ~ "September",
+    df$month == 10 ~ "October",
+    df$month == 11 ~ "November",
+    df$month == 12 ~ "December",
+    TRUE ~ NA_character_  #  any other cases
+  )
+  return(df)
+}
+
+# daily average 
+daily_avg<-function(df){
+  df%>%
+    mutate(year=year(date),month=month(date),day=day(date))%>%
+    group_by(year,month,day)%>%
+    summarise(across(where(is.numeric), ~mean(., na.rm=TRUE)))%>%
+    mutate(date=as.Date(paste(year,month,day,sep='-')))
+}
+
+#Ph
+transform_ph<-function(df){
+  #the negative logarithm (base 10) of the concentration of hydrogen ions in a solution
+  #convert pH back to concentration, you would use the inverse of the logarithmic function,which is the exponentiation function.
+  df<-mutate(df,h_ion = 10^(-ph))
+  return(df)
+}
+
+#columns 
+rm_columns<-function(df){
+
+  col_rm<-c("lab_id","peatland","piezometer","name","date","type","location","month","month_name","month_range","season_name","temp_c","stage","thgu","mehgu","d202hg","mif204hg","mif201","hg","mif200hg","mif199hg","br","npoc",'tc.ic','uva360s',"bdoc","uva360",'mehgf','thgf','uva254',"mif201hg","feii","feiii","fe3","fe2","uva360f","no3","nh4","tempc","runoffvolume_l","ph")
+  selected_df<-df[, !(names(df) %in% col_rm)] 
+}
+
+```
+
+
+
+
+
+``` {r data_correction, echo=FALSE}
+grab_weir<-grab
+lagg_pool<-lagg
+#rm(grab)
+#rm(lagg)
+
+dataframes<- list(runoff,event_precip,grab_weir,lagg_pool,bog_pore_week,lagg_pore_week,snow_timing)
+
+
+
+#lowercase 
+stream_breakpoint<-lowercase(s2)
+
+
+lowercased<-lapply(dataframes, lowercase )
+
+runoff<-as.data.frame(lowercased[1]) #m/d/y H:M
+event_precip<-as.data.frame(lowercased[2]) #y-m-d
+grab_weir<-as.data.frame(lowercased[3])
+lagg_pool<-as.data.frame(lowercased[4])
+bog_pore_week<-as.data.frame(lowercased[5])
+lagg_pore_week<-as.data.frame(lowercased[6])
+snow_timing<-as.data.frame(lowercased[7])
+rm(lowercased)
+
+colnames(runoff)[colnames(runoff) == "tp_"] <- "tp"
+colnames(runoff)[colnames(runoff) == "tn_"] <- "tn"
+colnames(runoff)[colnames(runoff)=="na."]<-"na"
+colnames(runoff)[colnames(runoff)=="date.time"]<-"datetime"
+
+#add inverse ph column 
+dataframes<- list(runoff,event_precip,grab_weir,lagg_pool,bog_pore_week,lagg_pore_week) #gw_month
+
+transformed_ph<-lapply(dataframes, transform_ph)
+
+
+runoff<-as.data.frame(transformed_ph[1])
+event_precip<-as.data.frame(transformed_ph[2])
+grab_weir<-as.data.frame(transformed_ph[3])
+lagg_pool<-as.data.frame(transformed_ph[4])
+bog_pore_week<-as.data.frame(transformed_ph[5])
+lagg_pore_week<-as.data.frame(transformed_ph[6])
+rm(transformed_ph)
+
+
+# separate date & time columns 
+runoff<-date_column_chr(runoff) 
+dataframes<- list(runoff,event_precip,grab_weir,lagg_pool,bog_pore_week,lagg_pore_week) #gw_month
+
+datetime_separate<-lapply(dataframes, date_time_separated)
+
+runoff<-as.data.frame(datetime_separate[1])
+event_precip<-as.data.frame(datetime_separate[2])
+grab_weir<-as.data.frame(datetime_separate[3])
+lagg_pool<-as.data.frame(datetime_separate[4])
+bog_pore_week<-as.data.frame(datetime_separate[5])
+lagg_pore_week<-as.data.frame(datetime_separate[6])
+rm(datetime_separate)
+stream_breakpoint<-date_time_separated(stream_breakpoint)
+
+#separate runoff
+sub_rf<-runoff[runoff$name=="S2N SUB" | runoff$name=="S2S SUB",]
+surf_rf<-runoff[runoff$name=="S2N SURF" | runoff$name=="S2S SURF",] 
+
+#season, month and month range 
+library(lubridate)
+library(dplyr)
+colnames(runoff)[which(names(runoff) == "datetime")] <- "date"
+
+runoff<-add_month_season(runoff)
+event_precip<-add_month_season(event_precip)
+bog_pore_week<-add_month_season(bog_pore_week)
+lagg_pore_week<-add_month_season(lagg_pore_week)
+surf_rf<-add_month_season(surf_rf)
+sub_rf<-add_month_season(sub_rf)
+grab_weir<-add_month_season(grab_weir)
+lagg_pool<-add_month_season(lagg_pool)
+
+snow_timing_2008_2011<-snow_timing[snow_timing$wyear>=2008 & snow_timing$wyear<=2011,]
+
+october_first<-yday("2010-10-01")
+snow_timing_2008_2011$DoA<-october_first+snow_timing_2008_2011$doa
+snow_timing_2008_2011$DoP<-october_first+snow_timing_2008_2011$peak
+snow_timing_2008_2011$DoP_nextyr<-(snow_timing_2008_2011$DoP)-365
+snow_timing_2008_2011$DoD<-october_first+snow_timing_2008_2011$dod
+snow_timing_2008_2011$DoD_nextyr<-(snow_timing_2008_2011$DoD)-365
+
+
+
+
+colnames(stream_signals)<-tolower(colnames(stream_signals))
+colnames(wte_signals)<-tolower(colnames(wte_signals))
+
+stream_signals_2008_2011<-stream_signals[stream_signals$wyear>=2008 & stream_signals$wyear<=2011,]
+wte_signals_2008_2011<-wte_signals[wte_signals$wyear>=2008 & wte_signals$wyear<=2011,]
+
+stream_signals_2008_2011$DoYOnset<-october_first+stream_signals_2008_2011$onset
+stream_signals_2008_2011$DoYFirstPeak<-october_first+stream_signals_2008_2011$firstpeak
+stream_signals_2008_2011$DoYOnset_nextyr<-(stream_signals_2008_2011$DoYOnset)-365
+stream_signals_2008_2011$DoYFirstPeak_nextyr<-(stream_signals_2008_2011$DoYFirstPeak)-365
+
+wte_signals_2008_2011$DoYpeak<-october_first+wte_signals_2008_2011$peak
+wte_signals_2008_2011$DoYtrough<-october_first+wte_signals_2008_2011$trough
+wte_signals_2008_2011$DoYpeak_nextyr<-(wte_signals_2008_2011$DoYpeak)-365
+wte_signals_2008_2011$DoYtrough_nextyr<-(wte_signals_2008_2011$DoYtrough)-365
+
+
+stream_breakpoint_2009_2011<-stream_breakpoint[year(stream_breakpoint$date)>=2009 & year(stream_breakpoint$date)<=2011,]
+precip_daily_2009_2011<-precip_daily[year(precip_daily$date)>=2009 & year(precip_daily$date)<=2011,]
+
+stream_breakpoint_2009_2011_daily<-stream_breakpoint_2009_2011%>%group_by(date)%>%
+  dplyr::summarize(across(where(is.numeric), ~ mean(.x, na.rm = TRUE)))
+
+stream_breakpoint_2009_2011_daily$DoY<-yday(stream_breakpoint_2009_2011_daily$date)
+
+grab_weir$name<-"grab_weir"
+lagg_pool$name<-"lagg_pool"
+
+#combine streamflow grab and lagg samples
+grabweir_laggpool <- bind_rows(grab_weir=grab_weir,lagg_pool=lagg_pool,.id = "name")
+grabweir_laggpool<-grabweir_laggpool[order(as.Date(grabweir_laggpool$date, format="%Y-%m-%d")), ] 
+#stream_data<-grabweir_laggpool
+#1259 (for grab) +734 (for lagg) = 1993 data exist for stream_data
+#the grab+lagg data is from 1986/24/03 to 2021/16/11
+
+stream_data<-grabweir_laggpool
+
+
+
+
+
+# select variables for PCA (is different from when we select conservative tracers)
+stream_slct<-dplyr::select(stream_data,cl,so4,ca,k,mg,na,al,fe,mn,si,sr,srp,tn,tp,h_ion,npoc,tc.ic,date) #stream_data is the grab+lagg samples
+
+stream_slct <- stream_slct %>%
+  mutate(toc = ifelse(!is.na(npoc), npoc,
+                      ifelse(!is.na(tc.ic), tc.ic,
+                             (npoc + tc.ic) / 2)))
+
+stream_slct<-dplyr::select(stream_slct,cl,so4,ca,k,mg,na,al,fe,mn,si,sr,srp,tn,tp,h_ion,toc,date)
+
+stream_slct_rmNa<-na.omit(stream_slct)
+#rm(stream_slct)
+
+
+#substituting 0.5*detection limit for elements in precipitation [mg/l]
+event_precip <- event_precip %>%
+  mutate(al = 0.005,
+         mn = 0.005,
+         si = 0.025,
+         sr = 0.005,
+         tp=0.025,
+         na=0.05
+         )
+
+print("done with data corrction")
+
+````
+
+
+
+```{r PCA to find conservative tracers year, echo=FALSE}
+
+yr<-2011
+stream_slct_rmNa_yr<-stream_slct_rmNa%>%filter(year(date)==yr)
+data_yr<-stream_slct_rmNa_yr[,-17] #for PC selection
+#rm(stream_slct_rmNa)
+
+pca_yr <-princomp(data_yr, cor=TRUE) #this is somehow similar to  prcomp(cleaned_data,center=TRUE, scale. = TRUE). (only the first PC is different)
+#print(pca_result2)
+
+#loadings or eigenvectors ; specifically is the eigenvector of the correlation or covariance matrix
+PCs_yr<-pca_yr$loading #similar to loadings <- pca_result$rotation (loadings are eigenvectors of the correlation matrix)
+#View(PCs)
+
+#variances
+summary(pca_yr)
+
+
+# Extracts Necessary Components
+columns<-ncol(data_yr) #columns=14
+Comp1<-pca_yr$loading[1:columns]
+Comp2<-pca_yr$loading[ (columns+1) : (2*columns) ] #18+1 goes in the second row
+Comp3<-pca_yr$loading[ (2*columns+1) : (3*columns) ]
+Comp4<-pca_yr$loading[ (3*columns+1) : (4*columns) ]
+comp5=PCs_yr[(4*columns+1):(5*columns)]
+
+```
+
+
+
+
+
+``` {r calculate residuals year ,  fig.show='hold'}
+
+# Produces Standardized Data
+data<-data_yr
+
+stddata<-data
+mean<-NULL
+sd<-NULL
+for (i in names(data)) { #data is in format data.frame
+  #returns a subset of your data containing only the first column
+  #data[[1]]: gives you the values of the first column directly, without any additional information like row numbers or column names.
+  mean[[i]]<-mean(data[[i]],na.rm=TRUE) #set na.rm to TRUE if NA values should be ignored
+  sd[[i]]<-sd(data[[i]],na.rm=TRUE) #set na.rm to TRUE if NA values should be ignored
+  stddata[[i]]=(data[[i]]-mean[[i]])/sd[[i]] #[[1]] means first column
+}
+#standardizing data would also deseasonalize the data
+
+
+# eigen vectors, of corr matrix, to be specific 
+X<-as.matrix(stddata)
+V1<-t(as.matrix(Comp1)) #create vectors
+V2<-t(as.matrix(data.frame(Comp1,Comp2))) # as.matrix gets rid of the row names; compare data.frame(Comp1,Comp2)[1,1:2] with as.matrix(data.frame(Comp1,Comp2))[1,1:2].   
+V3<-t(as.matrix(data.frame(Comp1, Comp2, Comp3)))
+V4<-t(as.matrix(data.frame(Comp1, Comp2, Comp3,Comp4)))
+V5<-t(as.matrix(data.frame(Comp1, Comp2, Comp3,Comp4,comp5)))
+
+# Projects Data 
+#I have wrongly done the projection with standardized_tracers %*% loadings_4dim
+X1<-X %*% (t(V1) %*% (ginv(V1 %*% t(V1)) %*% V1)) #here, creates a matrix
+X2<-X %*% (t(V2) %*% (ginv(V2 %*% t(V2)) %*% V2))
+X3<-X %*% (t(V3) %*% (ginv(V3 %*% t(V3)) %*% V3))
+X4<-X %*% (t(V4) %*% (ginv(V4 %*% t(V4)) %*% V4))
+X5<-X %*% (t(V5) %*% (ginv(V5 %*% t(V5)) %*% V5))
+
+X1<-data.frame(X1)
+X2<-data.frame(X2)
+X3<-data.frame(X3)
+X4<-data.frame(X4)
+X5<-data.frame(X5)
+
+colnames(X1)<-names(data) #X1 is the projection of standardized streamflow data on the first PC
+colnames(X2)<-names(data)
+colnames(X3)<-names(data)
+colnames(X4)<-names(data)
+colnames(X5)<-names(data)
+
+# Destandardizes Data
+destd1<-data
+destd2<-data
+destd3<-data
+destd4<-data
+destd5<-data
+
+#X1, is the projection of the original data on the first eigenvector of the corr matrix, so has 15 variables
+#X2, is the projection of the original data on the first two eigenvectors of the corr matrix, again has 15 variables
+for (i in names(data)) {
+  destd1[[i]]<- (X1[[i]]*sd[[i]])+mean[[i]]
+}
+for (i in names(data)) {
+  destd2[[i]]<- (X2[[i]]*sd[[i]])+mean[[i]]
+}
+for (i in names(data)) {
+  destd3[[i]]<- (X3[[i]]*sd[[i]])+mean[[i]]
+}
+for (i in names(data)) {
+  destd4[[i]]<- (X4[[i]]*sd[[i]])+mean[[i]]
+}
+for (i in names(data)) {
+  destd5[[i]]<- (X5[[i]]*sd[[i]])+mean[[i]]
+}
+
+# Creates Residuals
+Residual1<- destd1-data
+Residual2<- destd2-data
+Residual3<- destd3-data
+Residual4<- destd4-data
+Residual5<- destd5-data 
+
+```
+
+
+
+```{r residuals year_yr}
+
+#add seasons to data and residuals to sepaarte residual plots for different seasons
+
+#define seasons
+  endmelt_doy_2009 <- yday("2009-06-16")
+  endmelt_doy_2010 <- yday("2010-06-01") 
+  endmelt_doy_2011 <- yday("2011-06-08")
+  
+  
+  endgrowing_doy_2009 <- yday("2009-09-16")
+  endgrowing_doy_2010 <- yday("2010-10-24") 
+  endgrowing_doy_2011 <- yday("2011-10-14")
+  
+#year 2009
+if (yr == 2009) {
+  stream_slct_rmNa_2009 <- stream_slct_rmNa_yr
+  stream_slct_rmNa_2009 <- stream_slct_rmNa_2009%>%mutate(DoY=yday(date))%>%mutate(season=                                                                case_when(DoY%in%c(49:85)~"Freshet",
+                                                DoY%in%c(endmelt_doy_2009:endgrowing_doy_2009)~"Growing",
+                                                TRUE ~ "Dormant"  ))
+} else if (yr == 2010) {
+  stream_slct_rmNa_2010 <- stream_slct_rmNa_yr
+  stream_slct_rmNa_2010 <- stream_slct_rmNa_2010%>%mutate(DoY=yday(date))%>%mutate(season=case_when(DoY%in%c(19:74)~"Freshet",
+                                                DoY%in%c(74:endmelt_doy_2010)~"rest of Melt",
+                                                DoY%in%c(endmelt_doy_2010:endgrowing_doy_2010)~"Growing",
+                                               TRUE ~ "Dormant" ))
+
+} else if (yr == 2011) {
+  stream_slct_rmNa_2011 <- stream_slct_rmNa_yr
+  
+stream_slct_rmNa_2011 <- stream_slct_rmNa_2011%>%mutate(DoY=yday(date))%>%mutate(season=case_when(DoY%in%c(49:101)~"Freshet",DoY%in%c(101:endmelt_doy_2011)~"rest of Melt",DoY%in%c(endmelt_doy_2011:endgrowing_doy_2011)~"Growing",TRUE ~ "Dormant"))
+}
+
+  
+
+residuals_with_c<-function(data,stream_slct_rmNa_2011){
+data_seasons<-data%>%mutate(season=stream_slct_rmNa_2011$season)
+Residual1_seasons<-Residual1%>%mutate(season=stream_slct_rmNa_2011$season)
+Residual2_seasons<-Residual2%>%mutate(season=stream_slct_rmNa_2011$season)
+Residual3_seasons<-Residual3%>%mutate(season=stream_slct_rmNa_2011$season)
+Residual4_seasons<-Residual4%>%mutate(season=stream_slct_rmNa_2011$season)
+Residual5_seasons<-Residual5%>%mutate(season=stream_slct_rmNa_2011$season)
+
+#data_melt<-data_seasons%>%filter(season=="Freshet"|season=="rest of Melt")
+#data_growing<-data_seasons%>%filter(season=="Growing")
+#data_dormant<-data_seasons%>%filter(season=="Dormant")
+
+residual1_combined_stf <-  cbind(Residual1_seasons, data_seasons)
+
+colnames(residual1_combined_stf)[1:ncol(Residual1_seasons)] <- paste0(colnames(Residual1_seasons), "_residual")
+
+colnames(residual1_combined_stf)[(ncol(Residual1_seasons) + 1):ncol(residual1_combined_stf)] <- paste0(colnames(data_seasons), "_stf")
+
+
+residual2_combined_stf <-  cbind(Residual2_seasons, data_seasons)
+
+colnames(residual2_combined_stf)[1:ncol(Residual2_seasons)] <- paste0(colnames(Residual2_seasons), "_residual")
+
+colnames(residual2_combined_stf)[(ncol(Residual2_seasons) + 1):ncol(residual2_combined_stf)] <- paste0(colnames(data_seasons), "_stf")
+
+
+residual3_combined_stf <-  cbind(Residual3_seasons, data_seasons)
+
+colnames(residual3_combined_stf)[1:ncol(Residual3_seasons)] <- paste0(colnames(Residual3_seasons), "_residual")
+
+colnames(residual3_combined_stf)[(ncol(Residual3_seasons) + 1):ncol(residual3_combined_stf)] <- paste0(colnames(data_seasons), "_stf")
+
+
+residual4_combined_stf <-  cbind(Residual4_seasons, data_seasons)
+
+colnames(residual4_combined_stf)[1:ncol(Residual4_seasons)] <- paste0(colnames(Residual4_seasons), "_residual")
+
+colnames(residual4_combined_stf)[(ncol(Residual4_seasons) + 1):ncol(residual4_combined_stf)] <- paste0(colnames(data_seasons), "_stf")
+}
+
+
+residuals_with_c(data,stream_slct_rmNa_2011)
+```
+
+
+
+
+
+
+
+
+``` {r residual_plot }
+
+library(ggplot2)
+library(dplyr)
+library(broom)
+
+#residual2_combined_stf_edited<-residual2_combined_stf %>%
+#  filter(mn_residual <= -0.005)
+
+#residual1_combined_stf<-residual2_combined_stf_edited
+
+c_stf <- "toc_stf"
+c_residual <- "toc_residual"
+
+
+season_lm <- residual2_combined_stf %>%
+  group_by(season_stf) %>%
+  do({
+    model <- lm(reformulate(c_stf, c_residual), data = .)
+    tidy_model <- broom::tidy(model)
+    glance_model <- broom::glance(model)
+    
+    data.frame(
+      intercept = tidy_model$estimate[1],
+      slope = tidy_model$estimate[2],
+      r_squared = glance_model$r.squared,
+      p_value = glance_model$p.value,
+      stringsAsFactors = FALSE
+    )
+  }) %>%
+  mutate(
+    eq_label = paste0(
+      "β = ", round(slope, 2), ", ",
+      "R² = ", round(r_squared, 2), ", ",
+      ifelse(p_value < 0.05, "p < 0.05", paste0("p = ", format(p_value, scientific = TRUE, digits = 2)))
+    )
+  )
+
+
+
+season_lm <- season_lm %>%
+  mutate(
+    x_pos = case_when(
+      season_stf == "Freshet" ~ max(residual2_combined_stf[[c_stf]]) * 0.5,
+      season_stf == "rest of Melt" ~ max(residual2_combined_stf[[c_stf]]) * 0.5,
+      season_stf == "Growing" ~ max(residual2_combined_stf[[c_stf]]) * 0.5,
+      season_stf == "Dormant" ~ max(residual2_combined_stf[[c_stf]]) * 0.5
+    ),
+    y_pos = case_when(
+      season_stf == "Freshet" ~ max(residual2_combined_stf[[c_residual]]),
+     season_stf == "rest of Melt" ~ max(residual2_combined_stf[[c_residual]])*0.9,
+      season_stf == "Growing" ~ max(residual2_combined_stf[[c_residual]]) * (0.8),
+      season_stf == "Dormant" ~ max(residual2_combined_stf[[c_residual]]) * (0.7)
+    )
+  )
+
+p <- ggplot(residual2_combined_stf, aes(x = !!sym(c_stf), y = !!sym(c_residual), color = season_stf)) +
+  geom_point(size = 5, alpha = 0.6) +
+  labs(x = "TOC", y = "TOC residual", color = " ") +
+  theme_classic() +
+  scale_color_manual(values = c("Freshet" = "skyblue", "rest of Melt" = "blue", "Growing" = "darkgreen", "Dormant" = "darkgrey")) +
+  theme(
+    text = element_text(family = "Times New Roman", size = 16),
+    legend.text = element_text(family = "Times New Roman", size = 16),
+    legend.title = element_text(family = "Times New Roman", size = 16),
+    axis.title.x = element_text(family = "Times New Roman", size = 16),
+    axis.title.y = element_text(family = "Times New Roman", size = 16),
+    axis.text.x = element_text(family = "Times New Roman", size = 16),
+    axis.text.y = element_text(family = "Times New Roman", size = 16)
+  ) +
+  geom_smooth(method = "lm", se = FALSE, aes(group = season_stf)) +
+  geom_text(
+    data = season_lm,
+    aes(x = x_pos, y = y_pos, label = eq_label, color = season_stf),
+    hjust = 0, vjust = 1,
+    family = "Times New Roman", size = 7
+  )+ggtitle("2010 - 2D")
+
+
+print(p)
+
+
+
+```
+
+
+```{r }
+library(dplyr)
+library(broom)
+
+season_lm <- residual2_combined_stf %>%
+  group_by(season_stf) %>%
+  do({
+    # Fit the model
+    model <- lm(reformulate(c_stf, c_residual), data = .)
+    
+    # Tidy and glance the model
+    tidy_model <- broom::tidy(model)
+    glance_model <- broom::glance(model)
+    
+    # Print intermediate outputs for debugging
+    print(paste("Season:", unique(.$season_stf)))
+    print(tidy_model)
+    print(glance_model)
+    
+    # Return a tibble with the model, tidy_model, and glance_model
+    tibble(
+      model = list(model),
+      tidy_model = list(tidy_model),
+      glance_model = list(glance_model)
+    )
+  }) %>%
+  mutate(
+    intercept = sapply(tidy_model, function(x) {
+      print("Intercept calculation")
+      print(x)
+      x$estimate[1]
+    }),
+    slope = sapply(tidy_model, function(x) {
+      print("Slope calculation")
+      print(x)
+      x$estimate[2]
+    }),
+    r_squared = sapply(glance_model, function(x) {
+      print("R-squared calculation")
+      print(x)
+      x$r.squared
+    }),
+    p_value = sapply(glance_model, function(x) {
+      print("P-value calculation")
+      print(x)
+      x$p.value
+    }),
+    eq_label = paste0(
+      "β = ", round(slope, 2), ", ",
+      "R² = ", round(r_squared, 2), ", ",
+      ifelse(p_value < 0.05, "p < 0.05", paste0("p = ", format(p_value, scientific = TRUE, digits = 2)))
+    )
+  )
+
+# Print the final output for verification
+print(season_lm)
+
+```
+
+
+
+``` {r c-q plots_ready data}
+stream_breakpoint_2011<-stream_breakpoint_2009_2011%>%filter(year(date)==2011)%>%mutate(DoY=yday(date))
+
+
+if ("package:plyr" %in% search()) detach("package:plyr", unload = TRUE)
+stream_breakpoint_2011_daily <- stream_breakpoint_2011 %>%
+  group_by(date) %>%
+  summarise(across(3:6, ~ mean(.x, na.rm = TRUE), .names = "avg_{col}"))
+
+
+stream_breakpoint_2011_daily$avg_q.m3d<-(stream_breakpoint_2011_daily$avg_q.cfs)* 0.0283168 * 86400
+
+
+
+stream_slct_withq<-dplyr::select(stream_data,cl,so4,ca,k,mg,na,al,fe,mn,si,sr,srp,tn,tp,h_ion,npoc,tc.ic,q,date) #stream_data is the grab+lagg samples
+
+stream_slct_withq <- stream_slct_withq %>%
+  mutate(toc = ifelse(!is.na(npoc), npoc,
+                      ifelse(!is.na(tc.ic), tc.ic,
+                             (npoc + tc.ic) / 2)))
+
+stream_slct_withq<-dplyr::select(stream_slct_withq,cl,so4,ca,k,mg,na,al,fe,mn,si,sr,srp,tn,tp,h_ion,toc,q,date)
+
+
+
+
+stream_slct_withq_2011<-stream_slct_withq%>%filter(year(date)==2011)
+
+stream_slct_withq_2011_merged_q <- stream_slct_withq_2011 %>%
+  left_join(stream_breakpoint_2011_daily, by = "date")
+
+
+stream_slct_withq_2011_merged_q<-stream_slct_withq_2011_merged_q[,c(1:17,23,18)]
+
+stream_slct_withq_2011_logged <- stream_slct_withq_2011_merged_q %>%mutate(DoY=yday(date))%>%mutate(season=case_when(DoY%in%c(49:101)~"Freshet",DoY%in%c(101:endmelt_doy_2011)~"rest of Melt",DoY%in%c(endmelt_doy_2011:endgrowing_doy_2011)~"Growing",TRUE ~ "Dormant"))
+
+for (i in 1:18) {
+  stream_slct_withq_2011_logged[[i]] <- log10(stream_slct_withq_2011_merged_q[[i]])
+}
+
+
+names(stream_slct_withq_2011_logged)[names(stream_slct_withq_2011_logged) == "avg_q.m3d"] <- "avg_q_m3d"
+
+stream_slct_withq_2011_logged<-stream_slct_withq_2011_logged[-54,]
+stream_slct_withq_2011_logged<-stream_slct_withq_2011_logged[-1,]
+````
+
+
+
+
+
+
+
+
+``` {r c-q plots}
+library(dplyr)
+library(broom)
+library(purrr)
+
+
+
+constituent<-"toc"
+
+
+
+stream_slct_withq_2011_logged<-stream_slct_withq_2011_logged %>% filter(!is.na((get(constituent))) & !is.na(avg_q_m3d)& !is.infinite(avg_q_m3d)& !is.infinite(get(constituent)))
+
+
+season_lm <- stream_slct_withq_2011_logged %>%
+  group_by(season) %>%
+  summarise(
+    model = list(lm(get(constituent) ~ avg_q_m3d, data = cur_data())),
+    .groups = 'drop'
+  ) %>%
+  mutate(
+    tidy_model = map(model, tidy),
+    glance_model = map(model, glance),
+    intercept = map_dbl(tidy_model, ~ .x$estimate[1]),  
+    slope = map_dbl(tidy_model, ~ .x$estimate[2]),       
+    r_squared = map_dbl(glance_model, ~ .x$r.squared),   
+    p_value = map_dbl(glance_model, ~ .x$p.value),       
+    eq_label = paste0(
+      "β = ", round(slope, 2), ", ",
+      "R² = ", round(r_squared, 2), ", ",
+      ifelse(p_value < 0.05, "p < 0.05", paste0("p = ", format(p_value, scientific = TRUE, digits = 2)))
+    )
+  )
+
+
+
+
+season_lm <- season_lm %>%
+  mutate(
+    x_pos = max(stream_slct_withq_2011_logged$avg_q_m3d)*0.5,  
+    y_pos = case_when(
+      season == "Freshet" ~ max(stream_slct_withq_2011_logged[[constituent]]),
+      season == "rest of Melt" ~ max(stream_slct_withq_2011_logged[[constituent]])* (0.95) ,
+      season == "Growing" ~ max(stream_slct_withq_2011_logged[[constituent]])*(0.9),
+      season == "Dormant" ~ max(stream_slct_withq_2011_logged[[constituent]])*(0.85)
+    )
+  )
+
+
+
+p <- ggplot(stream_slct_withq_2011_logged %>% 
+         filter(!is.na(.data[[constituent]]) & !is.na(avg_q_m3d)), 
+         aes(x = avg_q_m3d, y = .data[[constituent]], color = season)) +
+  geom_point(size = 5, alpha = 0.6) +
+  labs(x = "Log Q", y = "Log TOC", color = " ") +
+  theme_classic() +
+  scale_color_manual(values = c("Freshet" = "skyblue", 
+                                 "rest of Melt" = "blue", 
+                                 "Growing" = "darkgreen", 
+                                 "Dormant" = "darkgrey")) +
+  theme(
+    text = element_text(family = "Times New Roman", size = 16),
+    legend.text = element_text(family = "Times New Roman", size = 16),
+    legend.title = element_text(family = "Times New Roman", size = 16),
+    axis.title.x = element_text(family = "Times New Roman", size = 16),
+    axis.title.y = element_text(family = "Times New Roman", size = 16),
+    axis.text.x = element_text(family = "Times New Roman", size = 16),
+    axis.text.y = element_text(family = "Times New Roman", size = 16)
+  ) +
+  geom_smooth(method = "lm", se = FALSE, aes(group = season)) +
+  geom_text(
+    data = season_lm,
+    aes(x = x_pos, y = y_pos, label = eq_label, color = season),
+    hjust = 0, vjust = 1,
+    family = "Times New Roman", size = 7
+  )
+```
+
+
+
+
+
+
+```{r time series _ data prepare}
+library("lubridate")
+
+#selecting<-function(df){
+#  df<-dplyr::select(df,date,DoY,name,cl, so4, ca, k , mg, na, al, fe, mn,si,sr,srp, tn, tn, toc)
+#  return(df)
+#}
+
+yr<-2011
+stream_slct_yr <-stream_slct%>% filter(year(date) == yr)%>%mutate(DoY=yday(date))%>%mutate(name=1)
+
+lagg_pore_week_yr<-lagg_slct%>% filter(year(date) == yr)%>%mutate(DoY=yday(date))%>%mutate(name=2)
+
+bog_pore_week_yr<-bog_slct%>% filter(year(date) == yr)%>%mutate(DoY=yday(date))%>%mutate(name=3)
+
+surf_rf_yr<-surf_slct%>% filter(year(date) == yr)%>%mutate(DoY=yday(date))%>%mutate(name=4)
+
+sub_rf_yr<-sub_slct%>% filter(year(date) == yr)%>%mutate(DoY=yday(date))%>%mutate(name=5)
+
+precip_yr<-precip_slct%>% filter(year(date) == yr) %>%mutate(DoY=yday(date))%>%mutate(name=6)
+
+stream_precip_yr <- data.frame(
+  stage.cm = ((stream_breakpoint_2009_2011_daily %>% filter(year(date) == yr))$stage.ft)*30.48,
+  DoY = (stream_breakpoint_2009_2011_daily %>% filter(year(date) == yr))$DoY,
+  precip.cm = (precip_daily_2009_2011 %>% filter(year(date) == yr)%>%mutate(DoY=yday(date)))$precip_cm,
+  date=(stream_breakpoint_2009_2011_daily %>% filter(year(date) == yr))$date
+)
+
+#2011
+df_binded_2011<-bind_rows(stream_slct_yr,lagg_pore_week_yr,bog_pore_week_yr, surf_rf_yr, sub_rf_yr, precip_yr, .id = "group") 
+
+df_binded_2011$group <- factor(df_binded_2011$group, levels = c(1, 2, 3, 4, 5, 6))
+
+```
+
+
+
+
+
+
+```{r time series _ plot}
+
+library(ggplot2)
+library(patchwork)
+
+
+plot1 <- ggplot(df_binded_2011, aes(x=DoY, y=toc, fill=group, color=group)) +
+  geom_jitter(shape=21, size=4,alpha=0.8, width=0.2, height=0.2, show.legend=TRUE) +geom_line()+
+  #geom_point(shape=21, size=4, show.legend=TRUE) + 
+  scale_fill_manual(
+    name="source water",
+     labels=c("stream", "lagg","bog", "OF","SSF","Precip"), 
+    values=c(alpha("blue",0.8), alpha("#6b7701",0.8),alpha("#FED300",0.6),alpha("#5A0881",0.8), alpha("chocolate4",0.8),  alpha("#5AEEFA",0.8))
+    ) +    
+  scale_color_manual(
+    name="source water", 
+     labels=c("stream", "lagg","bog", "OF","SSF","Precip"), 
+     values=c(alpha("blue",0.8), alpha("#6b7701",0.8),alpha("#FED300",0.6),alpha("#5A0881",0.8), alpha("chocolate4",0.8),  alpha("#5AEEFA",0.8))
+  ) +
+  scale_x_continuous(limits=c(0, 365), breaks=seq(0, 365, by = 30)) +
+  scale_y_continuous(limits=c(0, 100),breaks=seq(0, 100, by = 20))   +
+  #mg: (limits=c(0, 4),breaks=seq(0, 100, by = 1)) 
+  #si & ca:(limits=c(0, 12),breaks=seq(0, 100, by = 2)) 
+  #mn: (limits=c(0, 0.3),breaks=seq(0, 100, by = 0.1)) 
+  #al: (limits=c(0, 2),breaks=seq(0, 100, by = 1)) 
+  #sr: (limits=c(0, 0.05),breaks=seq(0, 100, by = 0.01)) 
+  #doc: (limits=c(0, 100),breaks=seq(0, 100, by = 20))
+  theme_classic(base_size=16) + 
+  theme(
+    plot.title=element_text(family="Times New Roman",size=18),  
+    axis.title=element_text(family="Times New Roman",size=20), 
+    axis.text=element_text(family="Times New Roman",size=20),
+    axis.text.y=element_text(family="Times New Roman",size=20),
+    axis.title.y = element_text(size = 20), 
+    legend.text=element_text(family="Times New Roman",size=16),  
+    legend.title=element_text(family="Times New Roman",size=18),
+    panel.background=element_blank(),
+    panel.grid.major=element_blank(),
+    panel.grid.minor=element_blank(),
+    plot.background=element_blank()
+  ) +
+  guides(
+    color=guide_legend(override.aes=list(shape=21)), 
+    fill=guide_legend()
+  )+
+  geom_vline(xintercept = 49, linetype = "dashed", color = "darkgrey")+ #DoP snowdepth
+  geom_vline(xintercept = 129, linetype = "dashed", color = "darkgrey")+ #Day of first Peak streamflow
+  geom_vline(xintercept = endmelt_doy_2011, linetype = "dashed", color = "darkgrey")+ #Day of end melt season
+  geom_vline(xintercept = endgrowing_doy_2011, linetype = "dashed", color = "darkgrey") #Day of end melt season
+
+
+```
+
+
+
+
+
+
+
+```{r stream precip}
+
+coeff <- 1
+
+precipColor <- "#5AEEFA"#"#69b3a2"
+streamColor <-rgb(0.2, 0.6, 0.9, 1) #rgb(0.2, 0.6, 0.9, 1)
+
+#install.packages("writexl")
+#library(writexl)
+#write_xlsx(stream_precip_yr, "stream_precip_yr.xlsx")
+
+
+plot2 <- ggplot(stream_precip_yr, aes(x=DoY)) +
+  geom_bar(aes(y=precip.cm), stat="identity", size=.7, fill=precipColor, color=precipColor, alpha=.2) +
+  geom_line(aes(y=stage.cm/coeff), size=0.7, color=streamColor) +
+  scale_x_continuous(limits=c(0, 365), breaks=seq(0, 365, by = 30)) +
+  scale_y_continuous(
+    name = "Precipitation (cm)",
+    limits = c(0, 12),
+    sec.axis = sec_axis(~.*coeff, name="Streamflow (cm)",breaks=seq(0, 12, by = 2)) 
+  ) +coord_cartesian(ylim=c(0, 12)) +
+  theme_classic(base_size=16) +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(color = precipColor, size=16, family = "Times New Roman"),
+    axis.title.y.right = element_text(color = streamColor, size=16, family = "Times New Roman", angle = 90),
+    axis.text.x = element_text(family = "Times New Roman"),
+    axis.text.y = element_text(family = "Times New Roman"),
+    plot.title = element_text(family = "Times New Roman", size = 16)
+  ) +
+  ggtitle("2011")+
+  
+  geom_vline(xintercept = 317, linetype = "dashed", color = "darkgrey")+ #DoA snowdepth #2009: 334. 2010: 338
+  annotate("text", x = 317, y = 9, label = "Snowdepth appearance", angle = 90, vjust = -0.5, color = "darkgrey",size = 5)+
+  
+  geom_vline(xintercept =49 , linetype = "dashed", color = "darkgrey")+ #DoP snowdepth  #2009: 49. 2010:19
+  annotate("text", x = 49, y = 9, label = "Peak snowdepth", angle = 90, vjust = -0.5, color = "darkgrey",size = 5)+
+  
+  geom_vline(xintercept = 101, linetype = "dashed", color = "darkgrey")+ #Day of first Peak streamflow. #2009: 85 2010: 74. 2011: 101
+  annotate("text", x = 101, y = 10.5, label = "First peak Q", angle = 90, vjust = -0.5, color = "darkgrey",size = 5)+
+  
+  geom_vline(xintercept = endmelt_doy_2011, linetype = "dashed", color = "darkgrey")+ #Day of end melt season
+  annotate("text", x = endmelt_doy_2011, y = 11, label = "Melt ends", angle = 90, vjust = -0.5, color = "darkgrey",size = 5)+
+  
+  geom_vline(xintercept = endgrowing_doy_2011, linetype = "dashed", color = "darkgrey")+ #Day of end growing season
+  annotate("text", x = endgrowing_doy_2011, y = 9, label = "Growing ends", angle = 90, vjust = -0.5, color = "darkgrey",size = 5)
+
+
+plot2
+ interactive_plot_stream<-ggplotly(plot2)
+
+
+```
+
+
+
+
+
+
+```{r boxplots}
+#end members next to each other for each tracer
+
+library(ggplot2)
+library(patchwork)
+
+df_binded_2011<-bind_rows(stream_slct_yr,lagg_pore_week_yr,bog_pore_week_yr, surf_rf_yr, sub_rf_yr, precip_yr, .id = "group") 
+
+df_binded_2011$group <- factor(df_binded_2011$group, levels = c(1, 2, 3, 4, 5, 6))
+
+df_binded_2011$group <- factor(df_binded_2011$group, 
+                               levels = c(1, 2, 3, 4, 5, 6), 
+                               labels = c("stream", "lagg", "bog", "OF", "SSF", "Precip"))
+
+
+# Reassign labels to 'name' column as factor with proper source water names
+df_binded_2011$name <- factor(df_binded_2011$name,
+                              levels = c(1, 2, 3, 4, 5, 6), # original numeric levels
+                              labels = c("stream", "lagg", "bog", "OF", "SSF", "Precip")) # source water labels
+
+# Create the boxplot with proper x-axis labels
+b <- ggplot(df_binded_2011, aes(x=name, y=ca, fill=group)) +
+  geom_boxplot(color="darkblue") +
+  labs(x=" ", y="TOC") +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.text.x = element_text(family = "Times New Roman",size = 20),
+        axis.text.y = element_text(family = "Times New Roman",size = 20),
+        axis.title.x = element_text(size = 20),
+        axis.title.y = element_text(size = 20), 
+        legend.text = element_text(size = 14),  
+        legend.title = element_text(size = 16),
+        legend.position = "none"     
+  ) +
+  scale_fill_manual(
+    name = "Source Water",
+    labels = c("stream", "lagg", "bog", "OF", "SSF", "Precip"),
+    values = c(alpha("blue", 0.8), alpha("#6b7701", 0.8), alpha("#FED300", 0.6),
+               alpha("#5A0881", 0.8), alpha("chocolate4", 0.8), alpha("#5AEEFA", 0.8))
+  )+
+  ylim(0, 100)
+
+b
+
+
+#mg: (limits=c(0, 4),breaks=seq(0, 100, by = 1)) 
+  #si & ca:(limits=c(0, 12),breaks=seq(0, 100, by = 2)) 
+  #mn: (limits=c(0, 0.3),breaks=seq(0, 100, by = 0.1)) 
+  #al: (limits=c(0, 2),breaks=seq(0, 100, by = 1)) 
+  #sr: (limits=c(0, 0.05),breaks=seq(0, 100, by = 0.01)) 
+  #doc: (limits=c(0, 100),breaks=seq(0, 100, by = 20))
+
+```
+
+
+
+
+```{r select tracers _ data _ different tracers during different seasons_2D}
+
+#dormant
+select_tracers_dormant <- function(df) {
+  selected_df <- df %>%
+    dplyr::select("na","al","cl","si","sr","tn","tp","npoc","tc.ic","date")
+  return(selected_df)
+}
+select_tracers_dormant_peatland <- function(df) {
+  selected_df <- df %>%
+    dplyr::select("na","al","cl","si","sr","tn","tp","toc","date")
+  return(selected_df)
+}
+
+#freshet
+select_tracers_freshet <- function(df) {
+  selected_df <- df %>%
+    dplyr::select("cl","mg","date")
+  return(selected_df)
+}
+
+#res of melt
+select_tracers_rest_melt<- function(df) {
+  selected_df <- df %>%
+    dplyr::select("ca","mg","mn","si","date")
+  return(selected_df)
+}
+#growing
+select_tracers_growing<- function(df) {
+  selected_df <- df %>%
+    dplyr::select("sr","si","ca","mn","npoc","tc.ic","date")
+  return(selected_df)
+}
+
+select_tracers_growing_peatland<- function(df) {
+  selected_df <- df %>%
+    dplyr::select("sr","si","ca","mn","toc","date")
+  return(selected_df)
+}
+
+
+
+surf_slct_dormant<-select_tracers_dormant(surf_rf)%>%mutate(name="OF")
+surf_slct_rest_melt<-select_tracers_rest_melt(surf_rf)%>%mutate(name="OF")
+surf_slct_freshet<-select_tracers_freshet(surf_rf)%>%mutate(name="OF")
+surf_slct_growing<-select_tracers_growing(surf_rf)%>%mutate(name="OF")
+
+surf_slct_dormant <- surf_slct_dormant %>%
+  mutate(toc = ifelse(!is.na(npoc), npoc,
+                      ifelse(!is.na(tc.ic), tc.ic,
+                             (npoc + tc.ic) / 2)))
+surf_slct_growing <- surf_slct_growing %>%
+  mutate(toc = ifelse(!is.na(npoc), npoc,
+                      ifelse(!is.na(tc.ic), tc.ic,
+                             (npoc + tc.ic) / 2)))
+
+
+sub_slct_dormant<-select_tracers_dormant(sub_rf)%>%mutate(name="SSF")
+sub_slct_rest_melt<-select_tracers_rest_melt(sub_rf)%>%mutate(name="SSF")
+sub_slct_freshet<-select_tracers_freshet(sub_rf)%>%mutate(name="SSF")
+sub_slct_growing<-select_tracers_growing(sub_rf)%>%mutate(name="SSF")
+
+sub_slct_dormant <- sub_slct_dormant %>%
+  mutate(toc = ifelse(!is.na(npoc), npoc,
+                      ifelse(!is.na(tc.ic), tc.ic,
+                             (npoc + tc.ic) / 2)))
+sub_slct_growing <- sub_slct_growing %>%
+  mutate(toc = ifelse(!is.na(npoc), npoc,
+                      ifelse(!is.na(tc.ic), tc.ic,
+                             (npoc + tc.ic) / 2)))
+
+
+bog_slct_dormant<-select_tracers_dormant_peatland(bog_pore_week)%>%mutate(name="bog")
+bog_slct_rest_melt<-select_tracers_rest_melt(bog_pore_week)%>%mutate(name="bog")
+bog_slct_freshet<-select_tracers_freshet(bog_pore_week)%>%mutate(name="bog")
+bog_slct_growing<-select_tracers_growing_peatland(bog_pore_week)%>%mutate(name="bog")
+
+
+lagg_slct_dormant<-select_tracers_dormant_peatland(lagg_pore_week)%>%mutate(name="lagg")
+lagg_slct_rest_melt<-select_tracers_rest_melt(lagg_pore_week)%>%mutate(name="lagg")
+lagg_slct_freshet<-select_tracers_freshet(lagg_pore_week)%>%mutate(name="lagg")
+lagg_slct_growing<-select_tracers_growing_peatland(lagg_pore_week)%>%mutate(name="lagg")
+
+precip_slct_dormant<-select_tracers_dormant_peatland(event_precip)%>%mutate(name="Precip")
+precip_slct_rest_melt<-select_tracers_rest_melt(event_precip)%>%mutate(name="Precip")
+precip_slct_freshet<-select_tracers_freshet(event_precip)%>%mutate(name="Precip")
+precip_slct_growing<-select_tracers_growing_peatland(event_precip)%>%mutate(name="Precip")
+
+
+stream_slct_dormant<-select_tracers_dormant(stream_data)%>%mutate(name="Stream")
+stream_slct_rest_melt<-select_tracers_rest_melt(stream_data)%>%mutate(name="Stream")
+stream_slct_freshet<-select_tracers_freshet(stream_data)%>%mutate(name="Stream")
+stream_slct_growing<-select_tracers_growing(stream_data)%>%mutate(name="Stream")
+
+
+stream_slct_dormant <- stream_slct_dormant %>%
+  mutate(toc = ifelse(!is.na(npoc), npoc,
+                      ifelse(!is.na(tc.ic), tc.ic,
+                             (npoc + tc.ic) / 2)))
+
+stream_slct_growing <- stream_slct_growing %>%
+  mutate(toc = ifelse(!is.na(npoc), npoc,
+                      ifelse(!is.na(tc.ic), tc.ic,
+                             (npoc + tc.ic) / 2)))
+
+
+```
+
+
+
+
+
+
+
+```{r prepare data}
+endmelt_doy_2011 <- yday("2011-06-08")
+endgrowing_doy_2011 <- yday("2011-10-14")
+  
+#rest_melt means that it has rest of melt tracers
+stream_slct<-stream_slct_rest_melt
+lagg_slct<-lagg_slct_rest_melt
+bog_slct<-bog_slct_rest_melt
+surf_slct<-surf_slct_rest_melt
+sub_slct<-sub_slct_rest_melt
+precip_slct<-precip_slct_rest_melt 
+
+#stream_slct<-stream_slct_growing
+#lagg_slct<-lagg_slct_growing
+#bog_slct<-bog_slct_growing
+#surf_slct<-surf_slct_growing
+#sub_slct<-sub_slct_growing
+#precip_slct<-precip_slct_growing
+
+yr<-2011
+stream_tracers_yr<-stream_slct%>% filter(year(date) == yr)%>%mutate(DoY=yday(date)) %>%mutate(season=
+                                                                                                                                                      case_when(DoY%in%c(49:101)~"Freshet",
+                                                                                                                                                     DoY%in%c(101:endmelt_doy_2011)~"rest of Melt",
+                                                                                                                                                    DoY%in%c(endmelt_doy_2011:endgrowing_doy_2011)~"Growing",
+                                                                                                                                                     TRUE ~ "Dormant"  ))
+
+
+lagg_yr<-lagg_slct%>% filter(year(date) == yr)%>%mutate(DoY=yday(date))  %>%mutate(season=
+                                                                                                                                                         case_when(DoY%in%c(49:101)~"Freshet",
+                                                                                                                                                         DoY%in%c(101:endmelt_doy_2011)~"rest of Melt",
+                                                                                                                                                     DoY%in%c(endmelt_doy_2011:endgrowing_doy_2011)~"Growing",
+                                                  TRUE ~ "Dormant"))
+  
+  
+  
+  
+  
+bog_yr<-bog_slct%>% filter(year(date) == yr)  %>%mutate(DoY=yday(date))  %>%mutate(season=
+                                                                                                                                                                 case_when(DoY%in%c(49:101)~"Freshet",
+                                                                                                                                                                 DoY%in%c(101:endmelt_doy_2011)~"rest of Melt",
+                                                                                                                                                      DoY%in%c(endmelt_doy_2011:endgrowing_doy_2011)~"Growing",
+                                          TRUE ~ "Dormant"))
+  
+  
+  
+  
+surf_yr<-surf_slct%>% filter(year(date) == yr) %>%mutate(DoY=yday(date))  %>%mutate(season=
+                                                                                                                                                        case_when(DoY%in%c(49:101)~"Freshet",
+                                                                                                                                                        DoY%in%c(101:endmelt_doy_2011)~"rest of Melt",
+                                                                                                                                                       DoY%in%c(endmelt_doy_2011:endgrowing_doy_2011)~"Growing",
+                                              TRUE ~ "Dormant" ))
+  
+  
+  
+  
+  
+sub_yr<-sub_slct%>% filter(year(date) == yr) %>%mutate(DoY=yday(date))  %>%mutate(season=
+                                                                                                                                                        case_when(DoY%in%c(49:101)~"Freshet",
+                                                                                                                                                         DoY%in%c(101:endmelt_doy_2011)~"rest of Melt",
+                                                                                                                                                       DoY%in%c(endmelt_doy_2011:endgrowing_doy_2011)~"Growing",
+                                               TRUE ~ "Dormant"))
+  
+  
+  
+  
+precip_yr<-precip_slct%>% filter(year(date) == yr) %>%mutate(DoY=yday(date))  %>%mutate(season=
+                                                                                                                                                         case_when(DoY%in%c(49:101)~"Freshet",
+                                                                                                                                                          DoY%in%c(101:endmelt_doy_2011)~"rest of Melt",
+                                                                                                                                                         DoY%in%c(endmelt_doy_2011:endgrowing_doy_2011)~"Growing",
+                                                                                                                                                          TRUE ~ "Dormant"))
+  
+
+precip_yr<-precip_yr%>%na.omit()  
+sub_yr<-sub_yr %>%na.omit()  #[,-c(8,9)]. [,-c(5,6)]
+surf_yr<-surf_yr%>%na.omit()  #[,-c(8,9)] GROWING:[,-c(5,6)]
+lagg_yr<-lagg_yr%>%na.omit()  
+bog_yr<-bog_yr%>%na.omit()  
+stream_yr<-stream_tracers_yr%>%na.omit()  #[,-c(8,9)]. rest of melt:[,-c(5,6)]
+stf_freshet_yr<-stream_yr%>%filter(season=="Freshet")
+stf_dormant_yr<-stream_yr%>%filter(season=="Dormant")
+stf_growing_yr<-stream_yr%>%filter(season=="Growing")
+
+  
+```
+
+
+
+
+
+
+
+```{r mixing_space_2d_rest of melt should watch}
+library(dplyr)
+stream_yr_restmelt<-stream_yr%>%filter(season=="rest of Melt")
+ #data_mixing_space<-stream_yr_restmelt %>%select(-c(date, DoY, season, name))
+data_mixing_space<-stream_yr_restmelt[, !(names(stream_yr_restmelt) %in% c("date", "DoY", "season", "name"))]
+ #growing: -c(5,6,8,9)  #rest of melt: -c(5:8) 
+
+  #pca
+  pca_mixing <-princomp(data_mixing_space, cor=TRUE) #eigenvalue decomposition #using correlation matrix does mean that we are using the standardized version of data
+  summary(pca_mixing)
+  
+  
+  # Extracts Necessary Components
+  columns<-ncol(data_mixing_space) #columns=14
+  Comp1<-pca_mixing$loading[1:columns]
+  Comp2<-pca_mixing$loading[ (columns+1) : (2*columns) ] #18+1 goes in the second row
+  dim<-2 #2 dimensions
+  comps<-pca_mixing$loading[1:(columns*dim)]
+  V<-as.matrix(data.frame(split(comps, 1:columns)))
+  V_named<-V
+  colnames(V_named)<-c("Ca","Mg","Mn","Si") #rest of melt
+  #colnames(V_named)<-c("Sr","Si","Ca","Mn","TOC") #growing
+  
+  #From the file  #timeseries_lower right of mixing diagram
+  # Produces Standardized Data
+  lagg_rm<-lagg_yr%>%dplyr::select(-DoY, -season,-date,-name)#rest melt [,-c(5:8)]   growing[,-c(6:9)]
+  bog_rm<-bog_yr%>%dplyr::select(-DoY, -season,-date,-name) #[,-c(5:8)] #[,-c(6:9)]
+  surf_rm<-surf_yr%>%dplyr::select(-DoY, -season,-date,-name)#[,-c(5:8)]#growing[,-c(5,6,8,9)]
+  sub_rm<-sub_yr%>%dplyr::select(-DoY, -season,-date,-name)#[,-c(5:8)]#[,-c(5,6,8,9)]
+  precip_rm<-precip_yr%>%dplyr::select(-DoY, -season,-date,-name)#[,-c(5:8)]# growing: [,-c(6:9)]
+  stream_freshet_rm<-stf_freshet_yr%>%dplyr::select(-DoY, -season,-date,-name)
+  stream_dormant_rm<-stf_dormant_yr%>%dplyr::select(-DoY, -season,-date,-name)
+  stream_growing_rm<-stf_growing_yr%>%dplyr::select(-DoY, -season,-date,-name)
+
+  
+  
+  stddata<-data_mixing_space
+  mean<-NULL
+  sd<-NULL
+  for (i in names(data_mixing_space)) {
+    mean[[i]]<-mean(data[[i]]) #set na.rm to TRUE if NA values should be ignored
+    sd[[i]]<-sd(data[[i]]) #set na.rm to TRUE if NA values should be ignored
+    stddata[[i]]=(data_mixing_space[[i]]-mean[[i]])/sd[[i]]
+  }
+  
+  stdlagg<-lagg_rm
+  for (i in names(data_mixing_space)) {
+    stdlagg[[i]]=(lagg_rm[[i]]-mean[[i]])/sd[[i]]
+  }
+  stdbog<-bog_rm
+  for (i in names(data_mixing_space)) {
+    stdbog[[i]]=(bog_rm[[i]]-mean[[i]])/sd[[i]]
+  }
+  stdsurf<-surf_rm
+  for (i in names(data_mixing_space)) {
+    stdsurf[[i]]=(surf_rm[[i]]-mean[[i]])/sd[[i]]
+  }
+  stdsub<-sub_rm
+  for (i in names(data_mixing_space)) {
+    stdsub[[i]]=(sub_rm[[i]]-mean[[i]])/sd[[i]]
+  }
+  stdprecip<-precip_rm
+  for (i in names(data_mixing_space)) {
+    stdprecip[[i]]=(precip_rm[[i]]-mean[[i]])/sd[[i]]
+  }
+  
+  std_stf_freshet<-stream_freshet_rm
+   for (i in names(data_mixing_space)) {
+    std_stf_freshet[[i]]=(stream_freshet_rm[[i]]-mean[[i]])/sd[[i]]
+  }
+  
+  std_stf_dormant<-stream_dormant_rm
+   for (i in names(data_mixing_space)) {
+    std_stf_dormant[[i]]=(stream_dormant_rm[[i]]-mean[[i]])/sd[[i]]
+  }
+  
+  std_stf_growing<-stream_growing_rm
+   for (i in names(data_mixing_space)) {
+    std_stf_growing[[i]]=(stream_growing_rm[[i]]-mean[[i]])/sd[[i]]
+  }
+  
+
+  
+  stddata_mtx<-as.matrix(stddata)
+  stdlagg_mtx<-as.matrix(stdlagg)
+  stdbog_mtx<-as.matrix(stdbog)
+  stdsurf_mtx<-as.matrix(stdsurf)
+  stdsub_mtx<-as.matrix(stdsub)
+  stdprecip_mtx<-as.matrix(stdprecip)
+  std_stf_freshet_mtx<-as.matrix(std_stf_freshet)
+  std_stf_dormant_mtx<-as.matrix(std_stf_dormant)
+  std_stf_growing_mtx<-as.matrix(std_stf_growing)
+  
+  # Projects Data onto Components
+  stream_projection<-data.frame(stddata_mtx %*% t(V))
+  
+  #projection for each endmember 
+  lagg_projection<-data.frame(stdlagg_mtx %*% t(V)) #lagg
+  bog_projection<-data.frame(stdbog_mtx %*% t(V))  #bog
+  surf_projection<-data.frame(stdsurf_mtx %*% t(V)) #surf
+  sub_projection<-data.frame(stdsub_mtx %*% t(V))   #sub
+  precip_projection<-data.frame(stdprecip_mtx %*% t(V))   #precip
+  stf_freshet_projection<-data.frame(std_stf_freshet_mtx %*% t(V)) 
+  stf_dormant_projection<-data.frame(std_stf_dormant_mtx %*% t(V)) 
+  stf_growing_projection<-data.frame(std_stf_growing_mtx %*% t(V)) 
+   
+   
+  #sub_projection_big<-which(sub_projection$X1 > 20)
+  #sub_projection_rmdbig<-sub_projection %>% filter(row_number() != sub_projection_big)
+  
+  
+  #lagg_projection_big<-which(lagg_projection$X1 > 15)
+  #lagg_projection_rmdbig<-lagg_projection %>% filter(row_number() != lagg_projection_big)
+  
+  #In the mixing space, use the V_named to draw the arrows,
+  #each column will be one arrow with the first row (coordiante along pc1) being the x of the endpoint and the second row being the y of the endpoint
+  stream_projection_season<-stream_projection%>%mutate(date=stream_yr_restmelt$date)%>%mutate(season=stream_yr_restmelt$season)%>%mutate(DoY=stream_yr_restmelt$DoY) %>%mutate(name=stream_yr_restmelt$name)
+  
+  lagg_projection_season<-lagg_projection%>%mutate(date=lagg_yr$date)%>%mutate(season=lagg_yr$season)%>%mutate(DoY=lagg_yr$DoY) %>%mutate(name=lagg_yr$name)
+  
+  bog_projection_season<-bog_projection%>%mutate(date=bog_yr$date)%>%mutate(season=bog_yr$season)%>%mutate(DoY=bog_yr$DoY) %>%mutate(name=bog_yr$name)
+  
+  surf_projection_season<-surf_projection%>%mutate(date=surf_yr$date)%>%mutate(season=surf_yr$season)%>%mutate(DoY=surf_yr$DoY)  %>%mutate(name=surf_yr$name)
+  
+  sub_projection_season<-sub_projection%>%mutate(date=sub_yr$date)%>%mutate(season=sub_yr$season)%>%mutate(DoY=sub_yr$DoY)  %>%mutate(name=sub_yr$name)
+  
+  precip_projection_season<-precip_projection%>%mutate(date=precip_yr$date)%>%mutate(season=precip_yr$season)%>%mutate(DoY=precip_yr$DoY)  %>%mutate(name=precip_yr$name)
+  
+  
+
+  stf_freshet_projection_season<-stf_freshet_projection%>%mutate(date=stf_freshet_yr$date)%>%mutate(season=stf_freshet_yr$season)%>%mutate(DoY=stf_freshet_yr$DoY)  %>%mutate(name=stf_freshet_yr$name)
+  
+  stf_dormant_projection_season<-stf_dormant_projection%>%mutate(date=stf_dormant_yr$date)%>%mutate(season=stf_dormant_yr$season)%>%mutate(DoY=stf_dormant_yr$DoY)  %>%mutate(name=stf_dormant_yr$name)
+  
+  stf_growing_projection_season<-stf_growing_projection%>%mutate(date=stf_growing_yr$date)%>%mutate(season=stf_growing_yr$season)%>%mutate(DoY=stf_growing_yr$DoY)  %>%mutate(name=stf_growing_yr$name)
+  
+  
+  
+  arrows_df <- data.frame(
+    variable = rep(colnames(V_named), each = 1),
+    PC1 = as.vector(V_named[1, ]),
+    PC2 = as.vector(V_named[2, ])
+  )
+  
+```
+
+
+
+```{r mixing diagram with biplots_2d}
+ # install.packages("plotly")
+  library(plotly)
+  library(ggplot2)
+  library (ggrepel)
+  x_limits <- c(-8, 6)
+  y_limits <- c(-5, 6)
+ # c("Freshet" = "skyblue", 
+ #                                "rest of Melt" = "blue", 
+ #                                "Growing" = "darkgreen", 
+  #                               "Dormant" = "darkgrey")) 
+
+  # season_shapes<-c()
+  p <- ggplot(data = stream_projection_season, aes(x = X1, y = X2)) +
+    geom_point(aes(color=name, text = paste("DoY:", DoY, "<br>X1:", round(X1,2), "<br>X2:", round(X2,2), "<br>Location:", name)),size = 5, alpha = 0.7, shape = 15 )+
+    #facet_wrap(~season)+
+    labs(x ="PC1 (85.7%)", y = "PC2 (8.7%)")+  #yr 2011 rest melt "PC 1 (85.7%)", y = "PC 2(8.7%)"
+    #2011 growing "PC 1 (54.3%)", y = "PC 2 (26.6%)"  0.5432072 0.2664306
+    scale_x_continuous(limits = x_limits,
+                       breaks = seq(-8, 6, by = 2) 
+    ) +
+    scale_y_continuous(limits = y_limits,
+                       breaks =seq(-5,8, by = 2) 
+    ) +
+    theme(text = element_text(family = "Times", size = 14), 
+          axis.title = element_text(size = 14), 
+          axis.text = element_text(size = 14),  
+          legend.text = element_text(size = 14),
+          legend.title = element_text(size = 14),
+          panel.grid.major = element_line(color = "grey90"),
+          panel.grid.minor = element_line(color = "grey90"),
+          panel.background = element_rect(fill = "white", color = NA),
+          panel.border = element_blank())+
+    geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "black")
+  
+ 
+  
+  lagg_projection_season$group <- "lagg pz"
+  bog_projection_season$group <- "bog pz"
+  precip_projection_season$group <- "Precip"
+  surf_projection_season$group<-"OF"
+  sub_projection_season$group<-"SSF"
+  
+  all_projections <- rbind(
+    transform(lagg_projection_season[,-c(3)],color="lagg pz"), 
+   transform(bog_projection_season[,-c(3)],color="bog pz"),
+   transform(surf_projection_season[,-c(3)],color="OF"),
+   transform(sub_projection_season[,-c(3)],color="SSF"),
+    transform(precip_projection_season[,-3],color="Precip") #, color="Precip"
+  )
+  
+  
+  #add STF other seasons
+  p<-p+
+    geom_point(data = stf_freshet_projection_season,aes(x = X1, y = X2, text = paste("DoY:", DoY, "<br>X1:", round(X1,2), "<br>X2:", round(X2,2))),size = 5, alpha = 0.7, shape = 15,color="blue" )+
+    
+    geom_point(data = stf_dormant_projection_season,aes(x = X1, y = X2, text = paste("DoY:", DoY, "<br>X1:", round(X1,2), "<br>X2:", round(X2,2))),size = 5, alpha = 0.7, shape = 15,color="blue" )+
+    
+  geom_point(data = stf_growing_projection_season,aes(x = X1, y = X2, text = paste("DoY:", DoY, "<br>X1:", round(X1,2), "<br>X2:", round(X2,2))),size = 5, alpha = 0.7, shape = 15,color="blue" )
+    
+  
+  
+  
+  # Add EM points
+  p <- p +
+    geom_point(data = all_projections, aes(x = X1, y = X2,color=group, text = paste("DoY:", DoY, "<br>X1:", round(X1,2), "<br>X2:", round(X2,2), "<br>Location:", name))#, color = season
+               , size = 5) +
+  guides(shape = guide_legend(override.aes = list(size = 14)))
+
+  
+  colors_EMs <-c("bog pz"=alpha("#FED300",0.6), "lagg pz"=alpha("#6b7701",0.8), "OF"=alpha("#5A0881",0.6),  "SSF"=alpha("chocolate4",0.4),"Precip"=alpha("#5AEEFA",0.8))
+  
+  colors_stf<-c("Stream"="blue")#,"Freshet"="blue","Growing"="blue","Dormant"="blue")
+                #  "#04c1fe","Growing"="#01bd5f","Dormant"="#5f727d")
+
+  p <- p +
+    scale_color_manual(values = c(colors_stf,colors_EMs))+
+    guides(color = guide_legend(title = " "))#guides( color = guide_legend("Legend"))
+  
+  
+  p <- p +
+    geom_segment(data = arrows_df, aes(x = 0, y = 0, xend = PC1 * 5, yend = PC2 * 5),
+                 arrow = arrow(length = unit(0.2, "cm") , type="closed"),
+                 color = "black")+
+    geom_text_repel(data = arrows_df, aes(x = PC1 * 5, y = PC2 * 5, label = variable),
+                    family = "Times", size = 14 / .pt, vjust = 0.5, hjust = -0.75, max.overlaps = Inf)   
+
+  
+  p
+
+
+
+
+interactive_plot2 <- ggplotly(p, tooltip = "text")%>%
+  add_text(x = arrows_df$PC1 * 14, 
+           y = arrows_df$PC2 * 10, 
+           text = arrows_df$variable,
+           showlegend = FALSE)
+
+```
+
+
+
+
+
+
+
+
+
+```{r mixing diagram with biplots_2d_sized by DoY}
+ # install.packages("plotly")
+  library(plotly)
+  library(ggplot2)
+  library (ggrepel)
+  x_limits <- c(-8, 6)
+  y_limits <- c(-5, 6)
+ # c("Freshet" = "skyblue", 
+ #                                "rest of Melt" = "blue", 
+ #                                "Growing" = "darkgreen", 
+  #                               "Dormant" = "darkgrey")) 
+
+  # season_shapes<-c()
+  p <- ggplot(data = stream_projection_season, aes(x = X1, y = X2)) +
+    geom_point(aes(color=name,size = DoY, text = paste("DoY:", DoY, "<br>X1:", round(X1,2), "<br>X2:", round(X2,2), "<br>Location:", name)), alpha = 0.7, shape = 15 )+
+    facet_wrap(~season)+
+    labs(x ="PC1 (85.7%)", y = "PC2 (8.7%)")+  #yr 2011 rest melt "PC 1 (85.7%)", y = "PC 2(8.7%)"
+    #2011 growing "PC 1 (54.3%)", y = "PC 2 (26.6%)"  0.5432072 0.2664306
+    scale_x_continuous(limits = x_limits,
+                       breaks = seq(-8, 6, by = 2) 
+    ) +
+    scale_y_continuous(limits = y_limits,
+                       breaks =seq(-5,8, by = 2) 
+    ) +
+    theme(text = element_text(family = "Times", size = 14), 
+          axis.title = element_text(size = 14), 
+          axis.text = element_text(size = 14),  
+          legend.text = element_text(size = 14),
+          legend.title = element_text(size = 14),
+          panel.grid.major = element_line(color = "grey90"),
+          panel.grid.minor = element_line(color = "grey90"),
+          panel.background = element_rect(fill = "white", color = NA),
+          panel.border = element_blank())+
+    geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "black")
+  
+ 
+  
+  lagg_projection_season$group <- "lagg pz"
+  bog_projection_season$group <- "bog pz"
+  precip_projection_season$group <- "Precip"
+  surf_projection_season$group<-"OF"
+  sub_projection_season$group<-"SSF"
+  
+  all_projections <- rbind(
+    transform(lagg_projection_season[,-c(3)],color="lagg pz"), 
+   transform(bog_projection_season[,-c(3)],color="bog pz"),
+   transform(surf_projection_season[,-c(3)],color="OF"),
+   transform(sub_projection_season[,-c(3)],color="SSF"),
+    transform(precip_projection_season[,-3],color="Precip") #, color="Precip"
+  )
+  
+  
+  #add STF other seasons
+  p<-p+
+    geom_point(data = stf_freshet_projection_season,aes(x = X1, y = X2,size = DoY, text = paste("DoY:", DoY, "<br>X1:", round(X1,2), "<br>X2:", round(X2,2))), alpha = 0.7, shape = 15,color="blue" )+
+    
+    geom_point(data = stf_dormant_projection_season,aes(x = X1, y = X2,size = DoY, text = paste("DoY:", DoY, "<br>X1:", round(X1,2), "<br>X2:", round(X2,2))),alpha = 0.7, shape = 15,color="blue" )+
+    
+  geom_point(data = stf_growing_projection_season,aes(x = X1, y = X2,size = DoY, text = paste("DoY:", DoY, "<br>X1:", round(X1,2), "<br>X2:", round(X2,2))), alpha = 0.7, shape = 15,color="blue" )
+    
+  
+  
+  
+  # Add EM points
+  p <- p +
+    geom_point(data = all_projections, aes(x = X1, y = X2,size = DoY,color=group, text = paste("DoY:", DoY, "<br>X1:", round(X1,2), "<br>X2:", round(X2,2), "<br>Location:", name))#, color = season
+               ) +
+  guides(shape = guide_legend(override.aes = list(size = 14)))
+
+  
+  colors_EMs <-c("bog pz"=alpha("#FED300",0.4), "lagg pz"=alpha("#6b7701",0.6), "OF"=alpha("#5A0881",0.6),  "SSF"=alpha("chocolate4",0.3),"Precip"=alpha("#5AEEFA",0.8))
+  
+  colors_stf<-c("Stream"="blue")#,"Freshet"="blue","Growing"="blue","Dormant"="blue")
+                #  "#04c1fe","Growing"="#01bd5f","Dormant"="#5f727d")
+
+  p <- p +
+    scale_color_manual(values = c(colors_stf,colors_EMs))+
+    guides(color = guide_legend(title = " "))#guides( color = guide_legend("Legend"))
+  
+  
+  p <- p +
+    geom_segment(data = arrows_df, aes(x = 0, y = 0, xend = PC1 * 5, yend = PC2 * 5),
+                 arrow = arrow(length = unit(0.2, "cm") , type="closed"),
+                 color = "black")+
+    geom_text_repel(data = arrows_df, aes(x = PC1 * 5, y = PC2 * 5, label = variable),
+                    family = "Times", size = 14 / .pt, vjust = 0.5, hjust = -0.75, max.overlaps = Inf)   
+
+ p<- p+scale_size_continuous(range = c(0.003, 10))
+  p
+
+
+
+
+interactive_plot2 <- ggplotly(p, tooltip = "text")%>%
+  add_text(x = arrows_df$PC1 * 14, 
+           y = arrows_df$PC2 * 10, 
+           text = arrows_df$variable,
+           showlegend = FALSE)
+```
+
+
+
+
+
+
+
+
+
+```{r distance of EM samples}
+#data<-stream_yr%>%dplyr::select(-name,-DoY,-season)
+data_mixing_space<-stream_yr_restmelt%>%dplyr::select(-date,-name,-DoY,-season)
+  #based on residual plots, 2D showed better a lower R2 compared to 1D, while 3D wasn't showing much improvement
+  dim<-2
+  
+  # Runs PCA
+    pca_mixing<-princomp(data_mixing_space, cor=TRUE)
+    
+    # Extracts Necessary Components
+    columns<-ncol(data_mixing_space)
+    comps<-pca_mixing$loading[1:(columns*dim)]
+    
+    V<-as.matrix(data.frame(split(comps, 1:columns)))
+   
+ # V_named<-V
+ # colnames(V_named)<-c("Ca","Mg","Mn","Si") #rest of melt
+ 
+  
+  stddata<-data_mixing_space
+  mean<-NULL
+  sd<-NULL
+  for (i in names(data_mixing_space)) {
+    mean[[i]]<-mean(data[[i]]) #set na.rm to TRUE if NA values should be ignored
+    sd[[i]]<-sd(data[[i]]) #set na.rm to TRUE if NA values should be ignored
+    stddata[[i]]=(data_mixing_space[[i]]-mean[[i]])/sd[[i]]
+  }
+  
+  stdlagg<-lagg_rm
+  for (i in names(data_mixing_space)) {
+    stdlagg[[i]]=(lagg_rm[[i]]-mean[[i]])/sd[[i]]
+  }
+  stdbog<-bog_rm
+  for (i in names(data_mixing_space)) {
+    stdbog[[i]]=(bog_rm[[i]]-mean[[i]])/sd[[i]]
+  }
+  stdsurf<-surf_rm
+  for (i in names(data_mixing_space)) {
+    stdsurf[[i]]=(surf_rm[[i]]-mean[[i]])/sd[[i]]
+  }
+  stdsub<-sub_rm
+  for (i in names(data_mixing_space)) {
+    stdsub[[i]]=(sub_rm[[i]]-mean[[i]])/sd[[i]]
+  }
+  stdprecip<-precip_rm
+  for (i in names(data_mixing_space)) {
+    stdprecip[[i]]=(precip_rm[[i]]-mean[[i]])/sd[[i]]
+  }
+  
+  std_stf_freshet<-stream_freshet_rm
+   for (i in names(data_mixing_space)) {
+    std_stf_freshet[[i]]=(stream_freshet_rm[[i]]-mean[[i]])/sd[[i]]
+  }
+  
+  std_stf_dormant<-stream_dormant_rm
+   for (i in names(data_mixing_space)) {
+    std_stf_dormant[[i]]=(stream_dormant_rm[[i]]-mean[[i]])/sd[[i]]
+  }
+  
+  std_stf_growing<-stream_growing_rm
+   for (i in names(data_mixing_space)) {
+    std_stf_growing[[i]]=(stream_growing_rm[[i]]-mean[[i]])/sd[[i]]
+  }
+  
+
+  stddata_mtx<-as.matrix(stddata)
+  stdlagg_mtx<-as.matrix(stdlagg)
+  stdbog_mtx<-as.matrix(stdbog)
+  stdsurf_mtx<-as.matrix(stdsurf)
+  stdsub_mtx<-as.matrix(stdsub)
+  stdprecip_mtx<-as.matrix(stdprecip)
+  std_stf_freshet_mtx<-as.matrix(std_stf_freshet)
+  std_stf_dormant_mtx<-as.matrix(std_stf_dormant)
+  std_stf_growing_mtx<-as.matrix(std_stf_growing)
+  
+  # Projects Data onto Components
+  #stream_proj_orth<-data.frame(stddata_mtx %*% (t(V) %*% (ginv(V %*% t(V)) %*% V)))
+  
+  #projection for each endmember 
+  lagg_proj_orth<-data.frame(stdlagg_mtx %*% (t(V) %*% (ginv(V %*% t(V)) %*% V))) #lagg
+  bog_proj_orth<-data.frame(stdbog_mtx %*% (t(V) %*% (ginv(V %*% t(V)) %*% V)))  #bog
+  surf_proj_orth<-data.frame(stdsurf_mtx %*% (t(V) %*% (ginv(V %*% t(V)) %*% V))) #surf
+  sub_proj_orth<-data.frame(stdsub_mtx %*% (t(V) %*% (ginv(V %*% t(V)) %*% V)))   #sub
+  precip_proj_orth<-data.frame(stdprecip_mtx %*% (t(V) %*% (ginv(V %*% t(V)) %*% V)))   #precip
+  stf_freshet_proj_orth<-data.frame(std_stf_freshet_mtx %*% (t(V) %*% (ginv(V %*% t(V)) %*% V)))
+  stf_dormant_proj_orth<-data.frame(std_stf_dormant_mtx %*% (t(V) %*% (ginv(V %*% t(V)) %*% V)))
+  stf_growing_proj_orth<-data.frame(std_stf_growing_mtx %*% (t(V) %*% (ginv(V %*% t(V)) %*% V))) 
+    
+  
+    # Destandardizes projected endmembers
+     subdest<-sub_rm
+    for (i in 1:columns) {
+      subdest[[i]]<- (sub_proj_orth[[i]]*sd[[i]])+mean[[i]]
+    }
+    surfdest<-surf_rm
+    for (i in 1:columns) {
+      surfdest[[i]]<- (surf_proj_orth[[i]]*sd[[i]])+mean[[i]]
+    }
+     laggdest<-lagg_rm
+    for (i in 1:columns) {
+      laggdest[[i]]<- (lagg_proj_orth[[i]]*sd[[i]])+mean[[i]]
+    }
+     bogdest<-bog_rm
+    for (i in 1:columns) {
+      bogdest[[i]]<- (bog_proj_orth[[i]]*sd[[i]])+mean[[i]]
+    }
+     precipdest<-precip_rm
+    for (i in 1:columns) {
+      precipdest[[i]]<- (precip_proj_orth[[i]]*sd[[i]])+mean[[i]]
+    }
+     
+       stf_freshet_dest<-stream_freshet_rm
+    for (i in 1:columns) {
+      stf_freshet_dest[[i]]<- (stf_freshet_proj_orth[[i]]*sd[[i]])+mean[[i]]
+    }
+     
+      stf_dormant_dest<-stream_dormant_rm
+    for (i in 1:columns) {
+      stf_dormant_dest[[i]]<- (stf_dormant_proj_orth[[i]]*sd[[i]])+mean[[i]]
+    }
+     
+      stf_growing_dest<-stream_growing_rm
+    for (i in 1:columns) {
+      stf_growing_dest[[i]]<- (stf_growing_proj_orth[[i]]*sd[[i]])+mean[[i]]
+    }
+     
+     
+     
+# Calculates Distance
+    d_sub<-abs(sub_rm-subdest)
+    distance_sub<-d_sub
+    
+    d_surf<-abs(surf_rm-surfdest)
+    distance_surf<-d_surf
+    
+    d_bog<-abs(bog_rm-bogdest)
+    distance_bog<-d_bog
+    
+    d_lagg<-abs(lagg_rm-laggdest)
+    distance_lagg<-d_lagg
+    
+    d_precip<-abs(precip_rm-precipdest)
+    distance_precip<-d_precip
+    
+    d_stf_freshet<-abs(stream_freshet_rm-stf_freshet_dest)
+    distance_stf_freshet<-d_stf_freshet
+    
+    d_stf_dormant<-abs(stream_dormant_rm-stf_dormant_dest)
+    distance_stf_dormant<-d_stf_dormant
+    
+    d_stf_growing<-abs(stream_growing_rm-stf_growing_dest)
+    distance_stf_growing<-d_stf_growing
+    
+    
+    
+    
+    # Formats distances into percents
+    for (i in 1:columns) {
+      distance_sub[[i]]<-sprintf("%1.2f%%",d_sub[[i]]/sub_rm[[i]]*100) #f%%: a floating number with percentage sign
+    }
+    
+    for (i in 1:columns) {
+      distance_surf[[i]]<-sprintf("%1.2f%%",d_surf[[i]]/surf_rm[[i]]*100) 
+    }
+    
+    for (i in 1:columns) {
+      distance_bog[[i]]<-sprintf("%1.2f%%",d_bog[[i]]/bog_rm[[i]]*100) 
+    }
+    
+    for (i in 1:columns) {
+      distance_lagg[[i]]<-sprintf("%1.2f%%",d_lagg[[i]]/lagg_rm[[i]]*100)
+    }
+    
+    for (i in 1:columns) {
+      distance_precip[[i]]<-sprintf("%1.2f%%",d_precip[[i]]/precip_rm[[i]]*100) 
+    }
+    
+      for (i in 1:columns) {
+      distance_stf_freshet[[i]]<-sprintf("%1.2f%%",d_stf_freshet[[i]]/stream_freshet_rm[[i]]*100) 
+    }
+    for (i in 1:columns) {
+      distance_stf_dormant[[i]]<-sprintf("%1.2f%%",d_stf_dormant[[i]]/stream_dormant_rm[[i]]*100) 
+    }
+    for (i in 1:columns) {
+      distance_stf_growing[[i]]<-sprintf("%1.2f%%",d_stf_growing[[i]]/stream_growing_rm[[i]]*100) 
+    }
+    
+    setwd("/Users/EMMA/Directory/csv results") 
+    
+    # Writes Distance to a CSV file
+    write.csv(distance_sub, file = file.path(csvFolder, "Percent_Distances_sub.csv"))
+    write.csv(distance_surf, file = file.path(csvFolder, "Percent_Distances_surf.csv"))
+    write.csv(distance_bog, file =  file.path(csvFolder,"Percent_Distances_bog.csv"))
+    write.csv(distance_lagg, file = file.path(csvFolder, "Percent_Distances_lagg.csv"))
+    write.csv(distance_precip, file = file.path(csvFolder, "Percent_Distances_precip.csv"))
+    write.csv(distance_stf_freshet, file = file.path(csvFolder, "Percent_Distances_stf_freshet.csv"))
+    write.csv(distance_stf_dormant, file =  file.path(csvFolder,"Percent_Distances_stf_dormant.csv"))
+    write.csv(distance_stf_growing, file = file.path(csvFolder, "Percent_Distances_stf_growing.csv"))
+
+
+```
+
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+
+```{r reconstruct_enhanced should run}
+stat <- data.frame(
+  ca =rep(100, 3), #c(100, 100, 100),  
+  mg = rep(100, 3),#c(100, 100, 100), 
+  mn = rep(100, 3),#c(100, 100, 100),  
+  si =rep(100, 3) #c(100, 100, 100)
+  )
+
+
+stat_list <- list()
+EM_proj_list <- list()
+EM_chem_list <- list()
+
+
+season_filter<-function(df,season_name){
+  df_season<-df%>%filter(season==season_name)
+  return(df_season)
+}
+
+EM1_chem<-season_filter(sub_yr,"rest of Melt")
+EM2_chem<-season_filter(bog_yr,"rest of Melt")
+EM3_chem<-season_filter(lagg_yr,"rest of Melt")
+
+EM1_proj<-season_filter(sub_projection_season,"rest of Melt")
+EM2_proj<-season_filter(bog_projection_season,"rest of Melt")
+EM3_proj<-season_filter(lagg_projection_season,"rest of Melt")
+
+
+cont<- data.frame(matrix(NA, nrow = nrow(stream_projection_season), ncol = 4))
+colnames(cont)<-c("F1","F2","F3","sum")
+
+stream_yr_ch_restmelt<-season_filter(stream_yr,"rest of Melt")
+
+stf_predicted <- as.data.frame(matrix(NA, nrow = nrow(stream_yr_ch_restmelt), ncol = 4))
+colnames(stf_predicted) <- c("ca", "mg", "mn", "si")#,"date","name","DoY","season")
+#stf_predicted<-stream_yr_ch_restmelt
+
+calculate_determinant <- function(EM1, EM2, EM3) {
+  return((-EM2[[1]]*EM1[[2]])+(EM3[[1]]*EM1[[2]])+(EM1[[1]]*EM2[[2]])+(-EM3[[1]]*EM2[[2]])+(-EM1[[1]]*EM3[[2]])+(EM2[[1]]*EM3[[2]]))
+}
+
+calculate_contributions <- function(stream_obs, EM1, EM2, EM3, dett) {
+    F1<-(((EM2[[1]]*EM3[[2]])-(EM3[[1]]*EM2[[2]]))+((EM2[[2]]-EM3[[2]])*stream_obs[[1]])+((EM3[[1]]-EM2[[1]])*stream_obs[[2]]))/dett
+    F2<-(((EM3[[1]]*EM1[[2]])-(EM1[[1]]*EM3[[2]]))+((EM3[[2]]-EM1[[2]])*stream_obs[[1]])+((EM1[[1]]-EM3[[1]])*stream_obs[[2]]))/dett
+    F3<-(((EM1[[1]]*EM2[[2]])-(EM2[[1]]*EM1[[2]]))+((EM1[[2]]-EM2[[2]])*stream_obs[[1]])+((EM2[[1]]-EM1[[1]])*stream_obs[[2]]))/dett
+   
+  return(c(F1, F2, F3,F1+F2+F3))
+}
+
+replacement<-function(F,EM1,EM2,EM3,stream_obs){
+    F1 <- F[1]
+    F2 <- F[2]
+    F3 <- F[3]
+  
+  
+  #if (F1 < 0 & F2 < 0) {
+ #   return(c(0, 0, 1))
+  #} else if (F1 < 0 & F3 < 0) {
+  #  return(c(0, 1, 0))
+#  } else if (F2 < 0 & F3 < 0) {
+ #   return(c(1, 0, 0))
+    
+   if (F3 < 0) {
+    F3 <- 0
+      a<-sqrt((EM2[[1]]-EM1[[1]])^2+(EM2[[2]]-EM1[[2]])^2)
+      b<-sqrt((stream_obs[[1]]-EM1[[1]])^2+(stream_obs[[2]]-EM1[[2]])^2) #em1
+      c<-sqrt((stream_obs[[1]]-EM2[[1]])^2+(stream_obs[[2]]-EM2[[2]])^2) #em2
+      x<-(a^2+b^2-c^2)/(2*a^2)
+      y<-1-x
+      F2<-x
+      F1<-y
+   # return(c(F1, F2,F3))
+      
+  } else if (F2 < 0) {
+    F2 <- 0
+    a<-sqrt((EM3[[1]]-EM1[[1]])^2+(EM3[[2]]-EM1[[2]])^2)
+      b<-sqrt((stream_obs[[1]]-EM1[[1]])^2+(stream_obs[[2]]-EM1[[2]])^2) #em1
+      c<-sqrt((stream_obs[[1]]-EM3[[1]])^2+(stream_obs[[2]]-EM3[[2]])^2) #em2
+      x<-(a^2+b^2-c^2)/(2*a^2)
+      y<-1-x
+      if (x<0){
+        x<-0
+        y<-1}
+      else if (y<0){
+        y<-0
+        x<-1}
+      F3<-x
+      F1<-y
+   # return(c(F1,F2, F3))
+    
+  } else if (F1 < 0) {
+    F1 <- 0
+    a<-sqrt((EM3[[1]]-EM2[[1]])^2+(EM3[[2]]-EM2[[2]])^2)
+      b<-sqrt((stream_obs[[1]]-EM2[[1]])^2+(stream_obs[[2]]-EM2[[2]])^2) #em1
+      c<-sqrt((stream_obs[[1]]-EM3[[1]])^2+(stream_obs[[2]]-EM3[[2]])^2) #em2
+      x<-(a^2+b^2-c^2)/(2*a^2)
+      y<-1-x
+      if (x<0){
+        x<-0
+        y<-1}
+      else if (y<0){
+        y<-0
+        x<-1}
+      F3<-x
+      F2<-y
+   # return(c(F1,F2, F3))
+  }
+  # F[4]<-sum(F[1:3])
+   F<-c(F1,F2,F3,F1+F2+F3)
+  
+  return(F)
+}
+
+adjust_contributions <- function(F) {
+  negative_count<-sum(F<0)
+  if (negative_count==2){
+    
+    F[F<0]<-0
+    F[F > 0] <- 1
+    F[4]<-1
+  }
+  
+  else{
+   F<-replacement(F,EM1,EM2,EM3,stream_obs)
+  }
+  return(F)
+}
+
+
+# Main code to loop through projections
+for (em1 in seq_len(nrow(EM1_proj))) {
+  EM1 <- EM1_proj[em1, ]
+  EM1_ch <- EM1_chem[em1, ]
+  
+  for (em2 in seq_len(nrow(EM2_proj))) {
+    EM2 <- EM2_proj[em2, ]
+    EM2_ch <- EM2_chem[em2, ]
+    
+    for (em3 in seq_len(nrow(EM3_proj))) {
+      EM3 <- EM3_proj[em3,]
+      EM3_ch <- EM3_chem[em3, ]
+
+  dett <- calculate_determinant(EM1, EM2, EM3)
+     # print(dett)
+      if (dett == 0) next # (no valid solution) go to the next loop
+      
+      for (stf in seq_len(nrow(stream_projection_season))) {
+              # print(stf)
+             stream_obs <- stream_projection_season[stf, ]
+             # print(stream_obs)
+             # print(EM1)
+              # print(EM2)
+               # print(EM3)
+             
+               contributions <- calculate_contributions(stream_obs, EM1, EM2, EM3, dett)
+               # print(contributions)
+              if (any(contributions[1:3] < 0)){
+                 #(any(contributions)<0){#(contributions[1]<0 | contributions[2]<0 | contributions[3]<0){
+                contributions <- adjust_contributions(contributions)
+               # F1 <- contributions[1]; F2 <- contributions[2]; F3 <- contributions[3]
+             }
+               #else{
+               # F1 <- contributions[1]; F2 <- contributions[2]; F3 <- contributions[3]
+             #  }
+              cont[stf,]<-contributions#F1
+             # cont[stf,2]<-contributions[2] #F2
+            #  cont[stf,3]<-contributions[3] #F3
+              #cont[stf,4]<-F1+F2+F3
+        }
+      
+      for (stf in seq_len(nrow(stream_projection_season))) {
+        # Regression and storing results
+        for (col in 1:4) {
+          stf_predicted[stf, col] <- cont[stf,1] * EM1_ch[col] + cont[stf,2] * EM2_ch[col] + cont[stf,3] * EM3_ch[col]
+        }
+      }
+    
+     
+      for (col in 1:4) {
+        model <- lm(stf_predicted[[col]] ~ stream_yr_ch_restmelt[[col]])
+        model_summary <- summary(model)
+        r2 <- model_summary$r.squared
+        slope <- model_summary$coefficients[2, "Estimate"]
+        #p_value_slope<-model_summary$coefficients[2, "Pr(>|t|)"]
+        p_value<-model_summary$coefficients[2, "Pr(>|t|)"]
+      #  overall_p_value <- model_summary$fstatistic#$coefficients[2, "Pr(>|t|)"] (this gives significance of the slope being different from zero)
+      #  p_value <- pf(overall_p_value[1], overall_p_value[2], overall_p_value[3], lower.tail = FALSE)
+
+#The overall p-value from the F-test tells you if the model, as a whole, has predictive power.
+#The F-statistic tests whether the model as a whole explains a significant portion of the variability in the response variable.
+        
+         # p_value <- coef(summary(model))[2, "Pr(>|t|)"]
+         # slope <- summary(model)$coefficients[2, "Estimate"]
+      
+          #if (!is.na(r2) && !is.na(p_value) && r2 >= 0.4 && p_value <= 0.05) {
+       
+          stat[1, col] <- r2
+          stat[2, col] <- p_value
+          stat[3, col] <- slope
+          #stat[4,col]<-p_value_slope
+      }
+            stat_list[[length(stat_list) + 1]] <- stat
+            EM_proj_list[[length(EM_proj_list) + 1]] <- list(EM1, EM2, EM3)
+            EM_chem_list[[length(EM_chem_list) + 1]] <- list(EM1_ch, EM2_ch, EM3_ch)
+            
+           # print("found one")
+         # }   #else{print("done")}
+    }
+  }
+    }
+
+optimum_match<-which(sapply(stat_list,function(x) all(round(x[1,],2)>=0.8) & all(x[2,]<=0.05)  & all(round(x[3,],2)>=0.7)))
+
+```
+
+
+
+
+
+
+  
+```{r add optimum EM points to the mixing diagram with biplots_2d_sized by DoY}
+ # install.packages("plotly")
+
+
+SSFpoint <- EM_proj_list[[242]][[1]]#83
+bogpoint <- EM_proj_list[[242]][[2]]
+laggpoint <- EM_proj_list[[242]][[3]]
+
+#highlighted_points <- data.frame(
+#  X1 = c(SSFpoint$X1, bogpoint$X1, laggpoint$X1),
+#  X2 = c(SSFpoint$X2, bogpoint$X2, laggpoint$X2),
+#  label = c(SSFpoint$name, bogpoint$name, laggpoint$name)  # Use 'name' as labels
+#)
+highlighted_points<-bind_rows(SSFpoint,bogpoint,laggpoint)
+
+  library(plotly)
+  library(ggplot2)
+  library (ggrepel)
+  x_limits <- c(-8, 6)
+  y_limits <- c(-5, 6)
+  
+  p1 <- ggplot(data = stream_projection_season, aes(x = X1, y = X2)) +
+    geom_point(aes(color=name,size = DoY, text = paste("DoY:", DoY, "<br>X1:", round(X1,2), "<br>X2:", round(X2,2), "<br>Location:", name)), alpha = 0.7, shape = 15 )+
+   # facet_wrap(~season)+
+    labs(x ="PC1 (85.7%)", y = "PC2 (8.7%)")+  #yr 2011 rest melt "PC 1 (85.7%)", y = "PC 2(8.7%)"
+    #2011 growing "PC 1 (54.3%)", y = "PC 2 (26.6%)"  0.5432072 0.2664306
+    scale_x_continuous(limits = x_limits,
+                       breaks = seq(-8, 6, by = 2) 
+    ) +
+    scale_y_continuous(limits = y_limits,
+                       breaks =seq(-5,8, by = 2) 
+    )+
+   # guides(
+   # size = guide_legend(override.aes = list(size = list(size = c(1, 2, 3)))) )+
+    theme_classic()+
+    theme(text = element_text(family = "Times", size = 14), 
+          axis.title = element_text(size = 14), 
+          axis.text = element_text(size = 14),  
+          legend.text = element_text(size = 14),
+          legend.title = element_text(size = 14),
+          panel.grid.major = element_line(color = "grey90"),
+          panel.grid.minor = element_line(color = "grey90"),
+          panel.background = element_rect(fill = "white", color = NA),
+          panel.border = element_blank())+
+    geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "black")
+  
+ 
+  lagg_projection_restmelt<-lagg_projection_season%>%filter(season=="rest of Melt")
+  bog_projection_restmelt<-bog_projection_season%>%filter(season=="rest of Melt")
+  precip_projection_restmelt<-precip_projection_season%>%filter(season=="rest of Melt")
+  surf_projection_restmelt<-surf_projection_season%>%filter(season=="rest of Melt")
+  sub_projection_restmelt<-sub_projection_season%>%filter(season=="rest of Melt")
+  
+  lagg_projection_restmelt$group <- "lagg pz"
+  bog_projection_restmelt$group <- "bog pz"
+  precip_projection_restmelt$group <- "Precip"
+  surf_projection_restmelt$group<-"OF"
+  sub_projection_restmelt$group<-"SSF"
+  
+  
+  all_projections <- rbind(
+    transform(lagg_projection_restmelt[,-c(3)],color="lagg pz"), 
+   transform(bog_projection_restmelt[,-c(3)],color="bog pz"),
+   transform(surf_projection_restmelt[,-c(3)],color="OF"),
+   transform(sub_projection_restmelt[,-c(3)],color="SSF"),
+    transform(precip_projection_restmelt[,-3],color="Precip") #, color="Precip"
+  )
+  
+  
+  
+  
+  # Add EM points
+  p1 <- p1 +
+    geom_point(data = all_projections, aes(x = X1, y = X2,size = DoY,color=group, text = paste("DoY:", DoY, "<br>X1:", round(X1,2), "<br>X2:", round(X2,2), "<br>Location:", name))#, color = season
+               ) +
+  guides( shape = guide_legend(override.aes = list(size = 14)))
+
+  
+  colors_EMs <-c("bog pz"=alpha("#FED300",0.4), "lagg pz"=alpha("#6b7701",0.6), "OF"=alpha("#5A0881",0.6),  "SSF"=alpha("chocolate4",0.3),"Precip"=alpha("#5AEEFA",0.8))
+  
+  colors_stf<-c("Stream"="blue")#,"Freshet"="blue","Growing"="blue","Dormant"="blue")
+                #  "#04c1fe","Growing"="#01bd5f","Dormant"="#5f727d")
+
+  p1 <- p1 +
+    scale_color_manual(values = c(colors_stf,colors_EMs))+
+    #guides(color = guide_legend(title = " "))#guides( color = guide_legend("Legend"))
+    guides(color = guide_legend(override.aes = list(size = 5), title = " "))
+  
+  p1 <- p1 +
+    geom_segment(data = arrows_df, aes(x = 0, y = 0, xend = PC1 * 5, yend = PC2 * 5),
+                 arrow = arrow(length = unit(0.2, "cm") , type="closed"),
+                 color = "black")+
+    geom_text_repel(data = arrows_df, aes(x = PC1 * 5, y = PC2 * 5, label = variable),
+                    family = "Times", size = 14 / .pt, vjust = 0.5, hjust = -0.75, max.overlaps = Inf)   
+
+ p1<- p1+scale_size_continuous(range = c(1, 15))
+  p1<-p1 +
+  geom_point(data = highlighted_points, aes(x = X1, y = X2), color = alpha("red",0.2), size = 5) + 
+ geom_polygon(data = highlighted_points, aes(x = X1, y = X2), fill = alpha("red", 0.1), color = "red") +
+  geom_text(data = highlighted_points, aes(x = X1, y = X2, label = name), 
+            color = "red", vjust = -1, family = "Times", size = 4)
+
+
+
+
+interactive_plot2 <- ggplotly(p1, tooltip = "text")%>%
+  add_text(x = arrows_df$PC1 * 14, 
+           y = arrows_df$PC2 * 10, 
+           text = arrows_df$variable,
+           showlegend = FALSE)
+```
+  
+  
+  
+
+
+```{r calculate predictions for the selected EMs}
+
+SSFpoint_ch <- EM_chem_list[[83]][[1]]
+bogpoint_ch <- EM_chem_list[[83]][[2]]
+laggpoint_ch <- EM_chem_list[[83]][[3]]
+
+
+
+df_edited<-function(df){
+  df_edited<-select(df,"ca","mg","mn","si","cl","so4","k","na","al","fe","sr","date")%>%filter(year(date)==2011)%>%mutate("DoY"=yday(date))%>%mutate(season=
+                                                                                                                                                         case_when(DoY%in%c(49:101)~"Freshet",
+                                                                                                                                                          DoY%in%c(101:endmelt_doy_2011)~"rest of Melt",
+                                                                                                                                                         DoY%in%c(endmelt_doy_2011:endgrowing_doy_2011)~"Growing",
+                                                                                                                                                          TRUE ~ "Dormant"))%>%filter(season=="rest of Melt")
+  return(df_edited)
+}
+
+sub_rest_melt<-df_edited(sub_rf)%>%mutate(name="SSF")%>%na.omit()
+bog_rest_melt<-df_edited(bog_pore_week)%>%mutate(name="Bog")%>%na.omit()
+lagg_rest_melt<-df_edited(lagg_pore_week)%>%mutate(name="Lagg")%>%na.omit()
+
+
+SSFpoint_ch_complete<-sub_rest_melt[which((sub_rest_melt$DoY)==102)&(sub_rest_melt$si)==3.19,]
+bogpoint_ch_complete<-bog_rest_melt[which((bog_rest_melt$DoY)==115)&(bog_rest_melt$si)==1.869,]
+laggpoint_ch_complete<-lagg_rest_melt[which((lagg_rest_melt$DoY)==144)&(lagg_rest_melt$si)==5.789,]
+
+
+highlighted_points_ch<-bind_rows(SSFpoint_ch_complete,bogpoint_ch_complete,laggpoint_ch_complete)
+
+#stream_restmelt<-stream_yr%>%filter(season=="rest of Melt")
+stream_restmelt<- df_edited(stream_data)%>%mutate(name="Stream")%>%na.omit() 
+  
+
+  EM1 <- highlighted_points[1, ]#ssf
+  EM1_ch <- highlighted_points_ch[1, ]
+  
+    EM2 <- highlighted_points[2, ]#bog
+    EM2_ch <- highlighted_points_ch[2, ]
+    
+      EM3 <- highlighted_points[3,]#lagg
+      EM3_ch <- highlighted_points_ch[3, ]
+
+     dett <- calculate_determinant(EM1, EM2, EM3)
+      
+      for (stf in seq_len(nrow(stream_projection_season))) {
+             stream_obs <- stream_projection_season[stf, ]
+             
+               contributions <- calculate_contributions(stream_obs, EM1, EM2, EM3, dett)
+              if (any(contributions[1:3] < 0)){
+                contributions <- adjust_contributions(contributions)
+             }
+              cont[stf,]<-contributions
+        }
+  
+   for (stf in seq_len(nrow(stream_projection_season))) {
+        for (col in 1:11) {
+          stf_predicted[stf, col] <- cont[stf,1] * EM1_ch[col] + cont[stf,2] * EM2_ch[col] + cont[stf,3] * EM3_ch[col]
+        }
+      }
+
+```    
+  
+  
+
+  
+```{r plot prediction vs observed}
+#col<-1 #ca
+#col<-2 #mg
+#col<-3 #mn
+#col<-4 #si
+#col<-5 #cl
+#col<-6 #so4
+#col<-7 #k
+#col<-8 #na
+#col<-9 #al
+#col<-10 #fe
+col<-11 #sr
+
+
+plot_data<-function(stf_predicted,stream_restmelt,si){
+    plot_data <- data.frame(
+    solute_predicted = stf_predicted[[si]],
+    solute_chem = stream_restmelt[[si]])
+}
+
+
+plot_data <-plot_data(stf_predicted,stream_restmelt,col)
+  #merged<-cbind(predict=stf_predicted,obs=stream_restmelt)
+    
+    model <- lm(stf_predicted[[col]] ~ stream_restmelt[[col]])
+    model_summary <- summary(model)
+    r2 <- summary(model)$r.squared
+    slope <- model_summary$coefficients[2, "Estimate"]
+    p_value<-model_summary$coefficients[2, "Pr(>|t|)"]
+    p_value_text <- if (p_value <= 0.05) "≤ 0.05" else format.pval(p_value)
+
+
+  #ca mg mn si
+    #subset_merged <- merged[, c(col, col_obs)]
+    
+    p_solute <- ggplot(plot_data, aes(x = solute_chem, y = solute_predicted)) +
+    geom_point(size=6,color = "black", fill = "darkgrey", stroke = 1, alpha = 0.8) +
+    geom_smooth(method = "lm", se = FALSE, color = "blue") +
+    labs(
+   #   x = "Ca (observed)",
+    #  y = "Ca (predicted)",
+      title ="Sr", #paste0(names(stf_predicted)[col]), 
+      x = paste0(names(stf_predicted)[col], " (observed)"),
+      y = paste0(names(stf_predicted)[col], " (predicted)"),
+      subtitle = paste("\n","  R² =", round(r2, 2), "| p-value ", p_value_text,"| slope=",round(slope,2))
+    ) +
+    theme_classic()+theme(
+    axis.title.y = element_text(margin = margin(r = 10),family = "Times", size = 18),    
+    axis.title.x = element_text(size = 18,family = "Times"),                               
+    axis.text = element_text(size = 18,family = "Times"),                                  
+    plot.subtitle = element_text(size = 18,family = "Times"),                             
+    plot.title = element_text(size = 18,family = "Times") 
+  )
+ p_solute
+  
+```
+
+
+  
+
+
+
+```{r contribution time series (model1)}
+
+cont<-mutate(cont,DoY=stream_restmelt$DoY)
+
+
+stream_breakpoint_2011_daily<-mutate(stream_breakpoint_2011_daily,"DoY"=yday(stream_breakpoint_2011_daily$date))%>%mutate(season= case_when(DoY%in%c(49:101)~"Freshet",
+                                                                                                                                                          DoY%in%c(101:endmelt_doy_2011)~"rest of Melt",
+                                                                                                                                                         DoY%in%c(endmelt_doy_2011:endgrowing_doy_2011)~"Growing",
+                                                                                                                                                          TRUE ~ "Dormant"))
+
+stream_breakpoint_2011_daily<-mutate(stream_breakpoint_2011_daily,avg_stage.cm = ((stream_breakpoint_2011_daily$avg_stage.ft)*30.48))
+  
+
+stream_breakpoint_2011_daily_restmelt<-stream_breakpoint_2011_daily%>%filter(season=="rest of Melt")
+
+
+
+cont_q<-merge(cont, stream_breakpoint_2011_daily_restmelt, by = "DoY")
+
+
+#cont_long <- cont_q %>%
+#  pivot_longer(cols = c(F1, F2, F3,avg_q.m3d), names_to = "variable", values_to = "value")
+
+
+#cont_plot<-ggplot(cont_long, aes(x = DoY, y = value, color = variable)) +
+#    geom_line() +
+#    geom_point(size=4) +
+  #  labs(x = "DoY", y = "Source water contribution", color = " ") +
+ #   theme_classic() +
+#    scale_color_manual(values = c("F1" ="chocolate4", "F2" = "#FED300", "F3" ="#6b7701"),#OF: "#5A0881"
+  #                     labels = c("F1" = "SSF", "F2" = "Bog porewater", "F3" = "Lagg porewater")) +#"OF"
+ #   scale_x_continuous(breaks = seq(0, max(cont$DoY, na.rm = TRUE), by = 30)) +
+#   theme(
+ #   axis.title.y = element_text(margin = margin(r = 10),family = "Times", size = 16),    
+ #   axis.title.x = element_text(size = 16,family = "Times"),                               
+  #  axis.text = element_text(size = 16,family = "Times"),                                  
+#    plot.subtitle = element_text(size = 16,family = "Times"),                             
+ #   plot.title = element_text(size = 16,family = "Times",hjust = 0.5) 
+#  )
+#  cont_plot
+  
+  ggplot(cont_q, aes(x=DoY)) +
+  geom_line(aes(y=precip.cm), stat="identity", size=.7, color=precipColor) +
+  geom_line(aes(y=stage.cm/coeff), size=0.7, color=streamColor) +
+  scale_x_continuous(limits=c(90, 180), breaks=seq(90, 180, by = 30)) +
+  scale_y_continuous(
+    name = "Source water contribution ",
+    limits = c(0, 12),
+    sec.axis = sec_axis(~.*coeff, name="Streamflow (cm)",breaks=seq(0, 12, by = 2)) 
+  ) +coord_cartesian(ylim=c(0, 12)) +
+  theme_classic(base_size=16) +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(color = precipColor, size=16, family = "Times New Roman"),
+    axis.title.y.right = element_text(color = streamColor, size=16, family = "Times New Roman", angle = 90),
+    axis.text.x = element_text(family = "Times New Roman"),
+    axis.text.y = element_text(family = "Times New Roman"),
+    plot.title = element_text(family = "Times New Roman", size = 16)
+  )
+```
+
+
+
+
+
+
+```{r lag zero}
+
+filter_season<-function(df){
+    df_edited<-df%>%filter(season=="Freshet"|season=="rest of Melt"|season=="Growing")
+return(df_edited)
+}
+stat_lagzero <- data.frame(
+  ca =rep(100, 3), #c(100, 100, 100),  
+  mg = rep(100, 3),#c(100, 100, 100), 
+  mn = rep(100, 3),#c(100, 100, 100),  
+  si =rep(100, 3) #c(100, 100, 100)
+  )
+
+stat_list_lagzero  <- list()
+#EM_proj_list_lagzero  <- list()
+#EM_chem_list_lagzero  <- list()
+
+stf_predicted_lagzero <- as.data.frame(matrix(NA, nrow = nrow(stream_yr_ch_restmelt), ncol = 4))
+colnames(stf_predicted_lagzero) <- c("ca", "mg", "mn", "si")#,"date","name","DoY","season")
+
+sub_projection_frg<-filter_season(sub_projection_season)
+bog_projection_frg<-filter_season(bog_projection_season)
+lagg_projection_frg<-filter_season(lagg_projection_season)
+
+EM1_ch_df<-filter_season(sub_yr)
+EM2_ch_df<-filter_season(bog_yr)
+EM3_ch_df<-filter_season(lagg_yr)
+
+
+diff_days_func<-function(df_EM,stream_obs){
+  filtered_df<-df_EM%>%filter(DoY<=stream_obs$DoY)
+  filtered_df<-filtered_df%>%mutate(diff_days=abs(DoY-(stream_obs$DoY)))
+  return(filtered_df)
+}
+
+  #EM1_proj_mindiff<-EM1_proj[which(EM1_proj$diff_days == min(EM1_proj$diff_days)), ]
+  subset_mindiff<-function(df){
+  
+   df_mindiff<-df %>%filter(df$diff_days == min(df$diff_days))
+  }
+  
+  #apply(EM1_proj_mindiff[sapply(EM1_proj_mindiff, is.numeric)], 2, mean, na.rm = TRUE)
+  avg_func<-function(df){
+    EM1 <- df %>%
+    summarise(
+    X1 = mean(X1, na.rm = TRUE),
+    X2 = mean(X2, na.rm = TRUE),
+    date = unique(date)[1],  
+    season = unique(season)[1],
+    DoY = unique(DoY)[1],
+    name = unique(name)[1],
+    diff_days = unique(diff_days)[1]
+  )
+   return(EM1)
+  }
+  
+    avg_func_ch<-function(df){
+    EM1_ch <- df %>%
+    summarise(
+    ca = mean(ca, na.rm = TRUE),
+    mg = mean(mg, na.rm = TRUE),
+    mn = mean(mn, na.rm = TRUE),
+    si = mean(si, na.rm = TRUE),
+    date = unique(date)[1],  
+    season = unique(season)[1],
+    DoY = unique(DoY)[1],
+    name = unique(name)[1]
+  )
+   return(EM1_ch)
+    }
+    
+  cont_lagzero<-data.frame(matrix(NA, nrow = nrow(stream_projection_season), ncol = 4))
+  colnames(cont_lagzero)<-c("F1","F2","F3","sum")
+    
+for (stf in seq_len(nrow(stream_projection_season))) {
+
+  stream_obs<-stream_projection_season[stf,]
+  
+  EM1_proj<-diff_days_func(sub_projection_frg,stream_obs)
+  EM2_proj<-diff_days_func(bog_projection_frg,stream_obs)
+  EM3_proj<-diff_days_func(lagg_projection_frg,stream_obs)
+
+
+  EM1_proj_mindiff<-subset_mindiff(EM1_proj)
+  EM2_proj_mindiff<-subset_mindiff(EM2_proj)
+  EM3_proj_mindiff<-subset_mindiff(EM3_proj)
+  
+  
+  EM1<-avg_func(EM1_proj_mindiff)
+  EM2 <- avg_func(EM2_proj_mindiff)
+  EM3 <- avg_func(EM3_proj_mindiff)
+
+  
+  EM1_ch_mindiff <- EM1_ch_df%>%filter(DoY==EM1_proj_mindiff$DoY)
+  EM2_ch_mindiff <- EM2_ch_df%>%filter(DoY==EM2_proj_mindiff$DoY)
+  EM3_ch_mindiff <- EM3_ch_df%>%filter(DoY==EM3_proj_mindiff$DoY)
+  
+  EM1_ch<-avg_func_ch(EM1_ch_mindiff)
+  EM2_ch<-avg_func_ch(EM2_ch_mindiff)
+  EM3_ch<-avg_func_ch(EM3_ch_mindiff)
+  
+  dett <- calculate_determinant(EM1, EM2, EM3)
+  
+   if (dett == 0) next 
+      
+               contributions_lagzero <- calculate_contributions(stream_obs, EM1, EM2, EM3, dett)
+            
+              if (any(contributions_lagzero[1:3] < 0)){
+                contributions_lagzero <- adjust_contributions(contributions_lagzero)
+                cont_lagzero[stf,]<-contributions_lagzero
+              }
+}
+      
+      for (stf in seq_len(nrow(stream_projection_season))) {
+        for (col in 1:4) {
+          stf_predicted_lagzero[stf, col] <- cont_lagzero[stf,1] * EM1_ch[col] + cont_lagzero[stf,2] * EM2_ch[col] + cont_lagzero[stf,3] * EM3_ch[col]
+        }
+      }
+    
+     
+      for (col in 1:4) {
+        model <- lm(stf_predicted_lagzero[[col]] ~ stream_yr_ch_restmelt[[col]])
+        model_summary <- summary(model)
+        r2 <- model_summary$r.squared
+        slope <- model_summary$coefficients[2, "Estimate"]
+        p_value<-model_summary$coefficients[2, "Pr(>|t|)"]
+       
+          stat_lagzero[1, col] <- r2
+          stat_lagzero[2, col] <- p_value
+          stat_lagzero[3, col] <- slope
+      }
+          #  stat_list_lagzero[[length(stat_list_lagzero) + 1]] <- stat_lagzero
+          #  EM_proj_list_lagzero[[length(EM_proj_list_lagzero) + 1]] <- list(EM1, EM2, EM3)
+          #  EM_chem_list_lagzero[[length(EM_chem_list_lagzero) + 1]] <- list(EM1_ch, EM2_ch, EM3_ch)
+            
+    
+
+```
+
+
+
+```{r plot prediction vs observed lag zero}
+#col<-1 #ca
+col<-2 #mg
+#col<-3 #mn
+#col<-4 #si
+#col<-5 #cl
+#col<-6 #so4
+#col<-7 #k
+#col<-8 #na
+#col<-9 #al
+#col<-10 #fe
+#col<-11 #sr
+
+stream_restmelt<-stream_yr%>%filter(season=="rest of Melt")
+
+
+
+plot_data<-function(stf_predicted_lagzero,stream_restmelt,solute){
+    plot_data <- data.frame(
+    solute_predicted = stf_predicted_lagzero[[solute]],
+    solute_chem = stream_restmelt[[solute]])
+}
+
+
+plot_data <-plot_data(stf_predicted_lagzero,stream_restmelt,col)
+  #merged<-cbind(predict=stf_predicted,obs=stream_restmelt)
+
+    model <- lm(stf_predicted_lagzero[[col]] ~ stream_restmelt[[col]])
+    model_summary <- summary(model)
+    r2 <- summary(model)$r.squared
+    slope <- model_summary$coefficients[2, "Estimate"]
+    p_value<-model_summary$coefficients[2, "Pr(>|t|)"]
+    p_value_text <- if (p_value <= 0.05) "≤ 0.05" else format.pval(p_value)
+
+
+  #ca mg mn si
+    #subset_merged <- merged[, c(col, col_obs)]
+    
+    p_solute <- ggplot(plot_data, aes(x = solute_chem, y = solute_predicted)) +
+    geom_point(size=6,color = "black", fill = "darkgrey", stroke = 1, alpha = 0.8) +
+    geom_smooth(method = "lm", se = FALSE, color = "blue") +
+    labs(
+   #   x = "Ca (observed)",
+    #  y = "Ca (predicted)",
+      title ="Mg", #paste0(names(stf_predicted)[col]), 
+      x = paste0(names(stf_predicted)[col], " (observed)"),
+      y = paste0(names(stf_predicted)[col], " (predicted)"),
+      subtitle = paste("\n","  R² =", round(r2, 2), "| p-value ", p_value_text,"| slope=",round(slope,2))
+    ) +
+    theme_classic()+theme(
+    axis.title.y = element_text(margin = margin(r = 10),family = "Times", size = 18),    
+    axis.title.x = element_text(size = 18,family = "Times"),                               
+    axis.text = element_text(size = 18,family = "Times"),                                  
+    plot.subtitle = element_text(size = 18,family = "Times"),                             
+    plot.title = element_text(size = 18,family = "Times") 
+  )
+ p_solute
+  
+```
+
+
+
+
+
+```{r contribution time series (lag zero)}
+
+cont_lagzero<-mutate(cont_lagzero,DoY=stream_restmelt$DoY)
+
+cont_long <- cont_lagzero %>%
+  pivot_longer(cols = c(F1, F2, F3), names_to = "variable", values_to = "value")
+
+
+cont_plot<-ggplot(cont_long, aes(x = DoY, y = value, color = variable)) +
+    geom_line() +
+    geom_point(size=4) +
+    labs(x = "DoY", y = "Source water contribution", color = " ") +
+    theme_classic() +
+    scale_color_manual(values = c("F1" ="chocolate4", "F2" = "#FED300", "F3" ="#6b7701"),#OF: "#5A0881"
+                       labels = c("F1" = "SSF", "F2" = "Bog porewater", "F3" = "Lagg porewater")) +#"OF"
+    scale_x_continuous(breaks = seq(0, max(cont_lagzero$DoY, na.rm = TRUE), by = 30)) +
+   theme(
+    axis.title.y = element_text(margin = margin(r = 10),family = "Times", size = 16),    
+    axis.title.x = element_text(size = 16,family = "Times"),                               
+    axis.text = element_text(size = 16,family = "Times"),                                  
+    plot.subtitle = element_text(size = 16,family = "Times"),                             
+    plot.title = element_text(size = 16,family = "Times",hjust = 0.5) 
+  )
+  cont_plot
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r flexible interval look back (model 2)}
+
+season_filter<-function(df,season_name){
+  df_season<-df%>%filter(season==season_name)
+  return(df_season)
+}
+stream_ch_df<-season_filter(stream_yr,"rest of Melt")
+
+stream_proj_df<-stream_projection_season
+
+EM1_proj_df<-sub_projection_season
+EM2_proj_df<-bog_projection_season
+EM3_proj_df<-lagg_projection_season
+
+
+#rest of melt for lagg starts at DoY 101, bog at 98, and SSF at 80. 
+
+
+stat_lookback <- data.frame(
+  ca =rep(100, 3),  
+  mg = rep(100, 3),
+  mn = rep(100, 3), 
+  si =rep(100, 3) 
+  )
+
+comb<-0
+
+
+#for each stf, there are multiple combinations of EMs.So the predicted streamflow corresponding to different combinations should be captured.
+stf_predicted_comb_list<-list() 
+cont_comb_list<-list() # contributions of different combinations to the specific streamflow.
+EM_comb_list<-list() #combinations of EMs for a given streamflow.
+EM_ch_comb_list<-list()
+dist_comb_list<-list() #distance of the given streamflow and the predicted based on different combinations.
+
+#for each comb, EMs and their contributions should be captured.
+EM_comb<-list() 
+EM_ch_comb<-list()
+cont_comb<-list()
+
+#for all stf
+stf_predicted_lookback <- as.data.frame(matrix(NA, nrow = nrow(stream_ch_df), ncol = 4))
+colnames(stf_predicted_lookback) <- c("ca", "mg", "mn", "si")#,"date","name","DoY","season")
+EMs_opt_stf_list<-list()
+EMs_ch_opt_stf_list<-list()
+cont_opt_stf_list<-list()
+dist_opt_stf_list<-list()
+combnum_opt_stf_list<-list()
+
+
+dayback<-function(df_EM,stream_obs,min_lookback,max_lookback){
+  df_back<-df_EM%>%filter(DoY >= (stream_obs$DoY - max_lookback) & DoY <= (stream_obs$DoY - min_lookback))
+ # if (nrow(df_back)==0){
+ #   df_filtered<-df_EM%>%filter(DoY<=stream_obs$DoY)
+ #  df_back<-df_filtered[nrow(df_filtered),]
+ # }
+  return(df_back)
+}
+
+
+distance<-function(predicted,observed){
+  distance<-sqrt(sum((predicted-observed)^2))
+  return(distance)
+}
+
+min_lookback<-0
+max_lookback<-2 #days
+
+
+for (stf in seq_len(nrow(stream_proj_df))) {
+
+
+   stream_obs<-stream_proj_df[stf,]
+   stream_obs_ch<-stream_ch_df[stf,1:4]
+
+  EM1_proj <-dayback(EM1_proj_df,stream_obs,min_lookback,max_lookback)
+  EM2_proj <-dayback(EM2_proj_df,stream_obs,min_lookback,max_lookback)
+  EM3_proj <-dayback(EM3_proj_df,stream_obs,min_lookback,max_lookback)
+
+
+  EM1_ch_df <- sub_yr%>%filter(DoY %in% EM1_proj$DoY)
+  EM2_ch_df  <- bog_yr%>%filter(DoY%in%EM2_proj$DoY)
+  EM3_ch_df  <- lagg_yr%>%filter(DoY%in%EM3_proj$DoY)
+
+ for (em1 in seq_len(nrow(EM1_proj))) {
+
+  EM1 <- EM1_proj[em1, ]
+  EM1_ch <- EM1_ch_df[em1, ]
+  
+  #print(comb)
+  
+  for (em2 in seq_len(nrow(EM2_proj))) {
+
+    EM2 <- EM2_proj[em2, ]
+    EM2_ch <- EM2_ch_df[em2, ]
+    
+    for (em3 in seq_len(nrow(EM3_proj))) {
+ 
+      EM3 <- EM3_proj[em3,]
+      EM3_ch <- EM3_ch_df[em3, ]
+
+              comb<-comb+1
+              EM_comb<-list(ssf=EM1,bog=EM2,lagg=EM3)
+              EM_ch_comb<-list(ssf=EM1_ch,bog=EM2_ch,lagg=EM3_ch)
+
+              EM_comb_list[[length(EM_comb_list)+1]]<-EM_comb
+              EM_ch_comb_list[[length(EM_ch_comb_list)+1]]<-EM_ch_comb
+
+
+              dett <- calculate_determinant(EM1, EM2, EM3)
+
+      if (dett == 0) next 
+
+               contributions_lookback <- calculate_contributions(stream_obs, EM1, EM2, EM3, dett)
+            
+              if (any(contributions_lookback[1:3] < 0)){
+             
+                contributions_lookback <- adjust_contributions(contributions_lookback)
+                cont_comb<-contributions_lookback #num turns into list feature
+              }
+
+        for (col in 1:4) {
+          stf_predicted_lookback[stf, col] <- cont_comb[1] * EM1_ch[col] + cont_comb[2] * EM2_ch[col] + cont_comb[3] * EM3_ch[col]
+        }
+
+
+        distance_comb <- distance(stf_predicted_lookback[stf,],stream_obs_ch) 
+        dist_comb_list[[length(dist_comb_list)+1]]<-distance_comb
+        cont_comb_list[[length(cont_comb_list)+1]]<-cont_comb
+
+
+    }
+  }
+ }
+  
+  dist_opt<- min(unlist(dist_comb_list))
+  dist_opt_stf_list[[length(dist_opt_stf_list)+1]]<-dist_opt
+  combnum_opt<-which(dist_comb_list ==dist_opt)
+  combnum_opt_stf_list[[length(combnum_opt_stf_list)+1]]<-combnum_opt
+  
+  cont_comb_opt<-cont_comb_list[combnum_opt]
+  cont_opt_stf_list[[length(cont_opt_stf_list)+1]]<-cont_comb_opt
+  
+  EM_comb_opt<-EM_comb_list[combnum_opt]
+  EMs_opt_stf_list[[length(EMs_opt_stf_list)+1]]<-EM_comb_opt
+  
+  EM_ch_comb_opt<-EM_ch_comb_list[combnum_opt]
+  EMs_ch_opt_stf_list[[length(EMs_ch_opt_stf_list)+1]]<-EM_ch_comb_opt
+
+    }
+
+```
+
+
+
+
+
+```{r streamflow predict for model 2}
+    cont_opt_stf_list_unique <- lapply(cont_opt_stf_list, function(x) x[[1]])
+    EMs_opt_stf_list_unique <- lapply(EMs_opt_stf_list, function(x) x[[1]])
+    EMs_ch_opt_stf_list_unique<- lapply(EMs_ch_opt_stf_list, function(x) x[[1]])
+    
+    stream_ca <- list()
+    stream_mg <- list()
+    stream_mn <- list()
+    stream_si <- list()
+
+for (i in seq_along(cont_opt_stf_list_unique)) {
+  
+  contributions <- cont_opt_stf_list_unique[[i]]
+
+  endmembers <- EMs_ch_opt_stf_list_unique[[i]]
+
+  stream_ca[[i]] <- (contributions[1] * endmembers$ssf$ca) +
+                    (contributions[2] * endmembers$bog$ca) +
+                    (contributions[3] * endmembers$lagg$ca)
+  
+  stream_mg[[i]] <- (contributions[1] * endmembers$ssf$mg) +
+                    (contributions[2] * endmembers$bog$mg) +
+                    (contributions[3] * endmembers$lagg$mg)
+  
+  stream_mn[[i]] <- (contributions[1] * endmembers$ssf$mn) +
+                    (contributions[2] * endmembers$bog$mn) +
+                    (contributions[3] * endmembers$lagg$mn)
+  
+  stream_si[[i]] <- (contributions[1] * endmembers$ssf$si) +
+                    (contributions[2] * endmembers$bog$si) +
+                    (contributions[3] * endmembers$lagg$si)
+}
+
+  DoY_values <- stream_ch_df$DoY
+    
+  stf_predicted_model2 <- data.frame(
+        stream_ca = unlist(stream_ca),
+        stream_mg = unlist(stream_mg),
+        stream_mn = unlist(stream_mn),
+        stream_si = unlist(stream_si),
+        DoY=unlist(DoY_values)
+)
+
+
+     #stf_predicted_30days <- cont_comb[1] * EM1_ch[col] + cont_comb[2] * EM2_ch[col] + cont_comb[3] * EM3_ch[col]
+```
+
+
+```{r plot prediction vs observed model2}
+#col<-1 #ca
+#col<-2 #mg
+col<-3 #mn
+#col<-4 #si
+
+#col<-5 #cl
+#col<-6 #so4
+#col<-7 #k
+#col<-8 #na
+#col<-9 #al
+#col<-10 #fe
+#col<-11 #sr
+
+
+
+plot_data<-function(stf_predicted,stream_ch_df,solute){
+    plot_data <- data.frame(
+    solute_predicted = stf_predicted[[solute]],
+    solute_chem = stream_ch_df[[solute]])
+}
+
+
+plot_data <-plot_data(stf_predicted_model2,stream_ch_df,col)
+  #merged<-cbind(predict=stf_predicted,obs=stream_restmelt)
+
+    model <- lm(stf_predicted_model2[[col]] ~ stream_ch_df[[col]])
+    model_summary <- summary(model)
+    r2 <- summary(model)$r.squared
+    slope <- model_summary$coefficients[2, "Estimate"]
+    p_value<-model_summary$coefficients[2, "Pr(>|t|)"]
+    p_value_text <- if (p_value <= 0.05) "≤ 0.05" else format.pval(p_value)
+
+
+  #ca mg mn si
+    #subset_merged <- merged[, c(col, col_obs)]
+    
+    p_solute <- ggplot(plot_data, aes(x = solute_chem, y = solute_predicted)) +
+    geom_point(size=6,color = "black", fill = "darkgrey", stroke = 1, alpha = 0.8) +
+    geom_smooth(method = "lm", se = FALSE, color = "blue") +
+    labs(
+   #   x = "Ca (observed)",
+    #  y = "Ca (predicted)",
+      title ="Mn", #paste0(names(stf_predicted)[col]), 
+      x = paste0(names(stream_ch_df)[col], " (observed)"),
+      y = paste0(names(stream_ch_df)[col], " (predicted)"),
+      subtitle = paste("\n","  R² =", round(r2, 2), "| p-value ", p_value_text,"| slope=",round(slope,2))
+    ) +
+    theme_classic()+theme(
+    axis.title.y = element_text(margin = margin(r = 10),family = "Times", size = 18),    
+    axis.title.x = element_text(size = 18,family = "Times"),                               
+    axis.text = element_text(size = 18,family = "Times"),                                  
+    plot.subtitle = element_text(size = 18,family = "Times"),                             
+    plot.title = element_text(size = 18,family = "Times") 
+  )
+ p_solute
+ 
+```
+
+
+
+
+
+
+
+
+```{r time series of opt distance}
+
+DoY_values <- stream_ch_df$DoY[1:length(dist_opt_stf_list)]
+
+y_values <- unlist(dist_opt_stf_list)
+
+
+plot_data <- data.frame(DoY = DoY_values, Distance = y_values)
+
+
+library(ggplot2)
+
+opt_dist_plot<-ggplot(plot_data, aes(x = DoY, y = Distance)) +
+  geom_point(size=4) +            
+  geom_line() +   
+ # geom_text(aes(label =paste(DoY, round(Distance,2), sep = "\n  ")),   
+ #           vjust = -0.9,      
+ #           hjust = 0.5,       
+ #           size = 3,          
+ #           color = "blue")+
+  labs(x = "Day of Year (DoY)", y = "Distance") +
+  theme_classic()+scale_y_continuous(expand = expansion(mult = c(0.05, 0.2)))#+  theme(plot.margin = margin(10, 10, 10, 10)) 
+
+opt_dist_plot
+```
+
+
+
+
+
+```{r contribution time series model 2}
+
+cont_opt_stf_list_unique <- lapply(cont_opt_stf_list, function(x) x[[1]])
+
+cont_opt_stf_df<- do.call(rbind, cont_opt_stf_list_unique)
+colnames(cont_opt_stf_df) <- c("F1", "F2", "F3","Sum")
+cont_opt_stf_df<-as.data.frame(cont_opt_stf_df)
+
+plot_data <- cont_opt_stf_df%>%mutate(DoY=stream_ch_df$DoY)
+
+cont_long <- plot_data %>%
+  pivot_longer(cols = c(F1, F2, F3), names_to = "variable", values_to = "value")
+
+
+cont_plot<-ggplot(cont_long, aes(x = DoY, y = value, color = variable)) +
+    geom_line() +
+    geom_point(size=4) +
+    labs(x = "DoY", y = "Source water contribution", color = " ") +
+    theme_classic() +
+    scale_color_manual(values = c("F1" ="chocolate4", "F2" = "#FED300", "F3" ="#6b7701"),#OF: "#5A0881"
+                       labels = c("F1" = "SSF", "F2" = "Bog porewater", "F3" = "Lagg porewater")) +#"OF"
+    scale_x_continuous(breaks = seq(0, max(plot_data$DoY, na.rm = TRUE), by = 30)) +
+   theme(
+    axis.title.y = element_text(margin = margin(r = 10),family = "Times", size = 16),    
+    axis.title.x = element_text(size = 16,family = "Times"),                               
+    axis.text = element_text(size = 16,family = "Times"),                                  
+    plot.subtitle = element_text(size = 16,family = "Times"),                             
+    plot.title = element_text(size = 16,family = "Times",hjust = 0.5) 
+  )
+  cont_plot
+```
+
+
+
+
+
+
+```{r time series of lag time for EMs}
+
+
+lag_time <- list()
+
+for (i in 1:length(EMs_ch_opt_stf_list_unique)) {
+  em_data <- EMs_ch_opt_stf_list_unique[[i]]
+  stf_data<-stream_proj_df[i,]
+
+  ssf_doy <- em_data$ssf$DoY
+  bog_doy <- em_data$bog$DoY
+  lagg_doy <- em_data$lagg$DoY
+
+  lag_ssf <- stf_data$DoY - ssf_doy
+  lag_bog <- stf_data$DoY - bog_doy
+  lag_lagg <- stf_data$DoY - lagg_doy
+  
+  lag_df <- data.frame(
+    lag_ssf = lag_ssf,
+    lag_bog = lag_bog,
+    lag_lagg = lag_lagg
+  )
+
+
+  lag_time[[i]] <- lag_df
+}
+
+lag_all <- do.call(rbind, lag_time)
+
+
+
+lag_data <- lag_all%>%mutate(DoY=stream_ch_df$DoY)
+
+lag_long <- lag_data %>%
+  pivot_longer(cols = c(lag_ssf, lag_bog, lag_lagg), names_to = "variable", values_to = "value")
+
+
+lag_plot<-ggplot(lag_long, aes(x = DoY, y = value, color = variable)) +
+    #geom_line() +
+    geom_point(size=4) +
+    labs(x = "DoY", y = "Lag time", color = " ") +
+    theme_classic() +
+    scale_color_manual(values = c("lag_ssf" ="chocolate4", "lag_bog" = "#FED300", "lag_lagg" ="#6b7701"),#OF: "#5A0881"
+                       labels = c("lag_ssf" = "SSF", "lag_bog" = "Bog porewater", "lag_lagg" = "Lagg porewater")) +#"OF"
+   # scale_x_continuous(breaks = seq(0, max(plot_data$DoY, na.rm = TRUE), by = 30)) +
+   theme(
+    axis.title.y = element_text(margin = margin(r = 10),family = "Times", size = 16),    
+    axis.title.x = element_text(size = 16,family = "Times"),                               
+    axis.text = element_text(size = 16,family = "Times"),                                  
+    plot.subtitle = element_text(size = 16,family = "Times"),                             
+    plot.title = element_text(size = 16,family = "Times",hjust = 0.5) 
+  )
+  lag_plot
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r 30 days look back (model 2)}
+
+season_filter<-function(df,season_name){
+  df_season<-df%>%filter(season==season_name)
+  return(df_season)
+}
+stream_yr_melt_ch<-season_filter(stream_yr,"rest of Melt")
+
+filter_season<-function(df){
+    df_edited<-df%>%filter(season=="Freshet"|season=="rest of Melt"|season=="Growing")
+return(df_edited)
+}
+
+EM1_ch_df<-filter_season(sub_yr)
+EM2_ch_df<-filter_season(bog_yr)
+EM3_ch_df<-filter_season(lagg_yr)
+
+#rest of melt for lagg starts at DoY 101, bog at 98, and SSF at 80. We want a 30 days worth of data, #prior the start of the stream rest of melt, so streamflow should start at max(101+30,98+30,80+30)=131
+stream_melt_ch<-stream_yr_melt_ch%>%filter(DoY>=131)
+stream_projection_melt<-stream_projection_season%>%filter(DoY>=131)
+
+#freshet, rest melt  projection
+sub_projection_fm<-(sub_projection_season)%>%filter(season=="Freshet"|season=="rest of Melt")
+bog_projection_fm<-(bog_projection_season)%>%filter(season=="Freshet"|season=="rest of Melt")
+lagg_projection_fm<-(lagg_projection_season)%>%filter(season=="Freshet"|season=="rest of Melt")
+#freshet, rest melt chem
+EM1_ch_fm_df<-(sub_yr)%>%filter(season=="Freshet"|season=="rest of Melt")
+EM2_ch_fm_df<-(bog_yr)%>%filter(season=="Freshet"|season=="rest of Melt")
+EM3_ch_fm_df<-(lagg_yr)%>%filter(season=="Freshet"|season=="rest of Melt")
+
+
+stat_30days <- data.frame(
+  ca =rep(100, 3),  
+  mg = rep(100, 3),
+  mn = rep(100, 3), 
+  si =rep(100, 3) 
+  )
+
+
+#cont_comb<-data.frame(matrix(NA, nrow = nrow(stream_projection_season), ncol = 4))
+#colnames(cont_comb)<-c("F1","F2","F3","sum")
+
+
+
+comb<-0
+
+#cont_dynamic<- data.frame(matrix(NA, nrow =total_comb, ncol = 4))
+
+#for each stf
+stf_predicted_comb_list<-list() 
+cont_comb_list<-list()
+EM_comb_list<-list()
+EM_ch_comb_list<-list()
+dist_comb_list<-list()
+
+#for each comb
+EM_comb<-list()
+EM_ch_comb<-list()
+cont_comb<-list()
+
+#for all stf
+stf_predicted_30days <- as.data.frame(matrix(NA, nrow = nrow(stream_melt_ch), ncol = 4))
+colnames(stf_predicted_30days) <- c("ca", "mg", "mn", "si")#,"date","name","DoY","season")
+EMs_opt_stf_list<-list()
+EMs_ch_opt_stf_list<-list()
+cont_opt_stf_list<-list()
+dist_opt_stf_list<-list()
+combnum_opt_stf_list<-list()
+
+#distance_comb <-data.frame(matrix(NA, nrow =total_comb, ncol=1))
+#data.frame(matrix(NA, nrow =nrow(stream_projection_melt),ncol=1))
+#data.frame(matrix(NA, nrow =nrow(stream_projection_melt),ncol=1))
+#data.frame(matrix(NA, nrow =nrow(stream_projection_melt),ncol=1))
+
+#combination of endmembers (dynamic and changing fro each stream sample)
+#optimum endmember combination for each stream sample
+
+
+
+dayback<-function(df_EM,stream_obs){
+  df_back<-df_EM%>%filter(DoY<= stream_obs$DoY)
+  return(df_back)
+}
+
+distance<-function(predicted,observed){
+  distance<-sqrt(sum((predicted-observed)^2))
+  return(distance)
+}
+
+
+for (stf in seq_len(nrow(stream_projection_melt))) {
+stf<-5
+
+   stream_obs<-stream_projection_melt[stf,]
+   stream_obs_ch<-stream_melt_ch[stf,1:4]
+
+ EM1_proj <-dayback(sub_projection_fm,stream_obs)
+ EM2_proj <-dayback(bog_projection_fm,stream_obs)
+ EM3_proj <-dayback(lagg_projection_fm,stream_obs)
+
+  #EM1<-avg_func(EM1_proj_mindiff)
+  #EM2 <- avg_func(EM2_proj_mindiff)
+  #EM3 <- avg_func(EM3_proj_mindiff)
+
+  EM1_ch_fm_df <- EM1_ch_df%>%filter(DoY==EM1_proj$DoY)
+  EM2_ch_fm_df <- EM2_ch_df%>%filter(DoY==EM2_proj$DoY)
+  EM3_ch_fm_df <- EM3_ch_df%>%filter(DoY==EM3_proj$DoY)
+  
+#  EM1_ch<-avg_func_ch(EM1_ch_mindiff)
+#  EM2_ch<-avg_func_ch(EM2_ch_mindiff)
+ # EM3_ch<-avg_func_ch(EM3_ch_mindiff)
+ for (em1 in seq_len(nrow(EM1_proj))) {
+
+  EM1 <- EM1_proj[em1, ]
+  EM1_ch <- EM1_ch_fm_df[em1, ]
+  
+  for (em2 in seq_len(nrow(EM2_proj))) {
+
+    EM2 <- EM2_proj[em2, ]
+    EM2_ch <- EM2_ch_fm_df[em2, ]
+    
+    for (em3 in seq_len(nrow(EM3_proj))) {
+ 
+      EM3 <- EM3_proj[em3,]
+      EM3_ch <- EM3_ch_fm_df[em3, ]
+
+              comb<-comb+1
+              EM_comb<-list(ssf=EM1,bog=EM2,lagg=EM3)
+              EM_ch_comb<-list(ssf=EM1_ch,bog=EM2_ch,lagg=EM3_ch)
+
+              EM_comb_list[[length(EM_comb_list)+1]]<-EM_comb
+              EM_ch_comb_list[[length(EM_ch_comb_list)+1]]<-EM_ch_comb
+
+
+              dett <- calculate_determinant(EM1, EM2, EM3)
+
+      if (dett == 0) next 
+
+               contributions_30days <- calculate_contributions(stream_obs, EM1, EM2, EM3, dett)
+            
+              if (any(contributions_30days[1:3] < 0)){
+                contributions_30days <- adjust_contributions(contributions_30days)
+                cont_comb<-contributions_30days #num turns into list feature
+              }
+
+        for (col in 1:4) {
+          stf_predicted_30days[stf, col] <- cont_comb[1] * EM1_ch[col] + cont_comb[2] * EM2_ch[col] + cont_comb[3] * EM3_ch[col]
+        }
+
+        #distance_dyn[comb,1] <- distance(stf_predicted_30days,stream_obs_ch) 
+        distance_comb <- distance(stf_predicted_30days[stf,],stream_obs_ch) 
+        dist_comb_list[[length(dist_comb_list)+1]]<-distance_comb
+        #sqrt(sum((stream_obs_ch - stf_predicted_comb[comb,])^2))
+        cont_comb_list[[length(cont_comb_list)+1]]<-cont_comb
+
+        
+    }
+  }
+ }
+  dist_opt<- min(unlist(dist_comb_list))
+  dist_opt_stf_list[[length(dist_opt_stf_list)+1]]<-dist_opt
+  combnum_opt<-which(dist_comb_list ==dist_opt)
+  combnum_opt_stf_list[[length(combnum_opt_stf_list)+1]]<-combnum_opt
+  
+  cont_comb_opt<-cont_comb_list[combnum_opt]
+  cont_opt_stf_list[[length(cont_opt_stf_list)+1]]<-cont_comb_opt
+  
+  EM_comb_opt<-EM_comb_list[combnum_opt]
+  EMs_opt_stf_list[[length(EMs_opt_stf_list)+1]]<-EM_comb_opt
+  
+  EM_ch_comb_opt<-EM_ch_comb_list[combnum_opt]
+  EMs_ch_opt_stf_list[[length(EMs_ch_opt_stf_list)+1]]<-EM_ch_comb_opt
+
+    }
+
+```
+
+
+
+```{r ezafe}
+lookback<-function(df_EM,stream_obs,ndays){
+
+    df_back<-df_EM%>%filter(DoY<= stream_obs$DoY)
+    
+    if ((nrow(df_back))<ndays){
+      n_remaining<-ndays-(nrow(df_back))
+      df_remaining <-df_EM[((nrow(df_back))+1):(nrow(df_back)+n_remaining),]
+      df_lookback<-bind_rows(df_back,df_remaining)
+    }
+    return(df_lookback)
+  }
+
+```
+
+
+
+
+
+
+
+
+```{r find EMs for each stf (new way)}
+
+comb<-0
+EM1_proj_melt<-EM1_proj%>%filter(season=="rest of Melt")
+EM2_proj_melt<-EM2_proj%>%filter(season=="rest of Melt")
+EM3_proj_melt<-EM3_proj%>%filter(season=="rest of Melt")
+
+cont_dynamic<- data.frame(matrix(NA, nrow =nrow(EM3_proj_melt)*nrow(EM2_proj_melt)*nrow(EM1_proj_melt), ncol = 4))
+stf_predicted_comb<-data.frame(matrix(NA, nrow =nrow(EM3_proj_melt)*nrow(EM2_proj_melt)*nrow(EM1_proj_melt), ncol = 4))
+
+distance_dyn <-data.frame(matrix(NA, nrow =nrow(EM3_proj_melt)*nrow(EM2_proj_melt)*nrow(EM1_proj_melt), ncol=1))
+
+min_dist<-data.frame(matrix(NA, nrow =nrow(stream_projection_season),ncol=1))
+combnum_opt<-data.frame(matrix(NA, nrow =nrow(stream_projection_season),ncol=1))
+
+EM_comb<-list()
+EM_ch_comb<-list()
+
+EM_comb_list<-list()
+EM_ch_comb_list<-list()
+
+EM_comb_opt<-list()
+EM_ch_comb_opt<-list()
+
+EM_comb_opt_stf_list<-list()
+EM_ch_comb_opt_stf_list<-list()
+
+
+
+for (stf in seq_len(nrow(stream_projection_season))) {
+             stream_obs <- stream_projection_season[stf, ]
+             stream_obs_ch<-stream_restmelt[stf,1:4]
+             
+           EM1_proj_daysago<-sub_projection_season%>%filter((DoY<=stream_obs$DoY)|(DoY<=stream_obs$DoY))
+           EM2_proj_daysago<-bog_projection_season%>%filter(DoY<=stream_obs$DoY)
+           EM3_proj_daysago<-lagg_projection_season%>%filter(DoY<=stream_obs$DoY)
+             
+          for (em1 in seq_len(nrow(EM1_proj))) {
+            EM1 <- EM1_proj[em1, ]
+            EM1_ch <- EM1_ch_fm_df[em1, ]
+  
+         for (em2 in seq_len(nrow(EM2_proj))) {
+             EM2 <- EM2_proj[em2, ]
+            EM2_ch <- EM2_chem[em2, ]
+    
+          for (em3 in seq_len(nrow(EM3_proj))) {
+             EM3 <- EM3_proj[em3,]
+              EM3_ch <- EM3_chem[em3, ]
+
+              dett <- calculate_determinant(EM1, EM2, EM3)
+              
+              comb<-comb+1
+              EM_comb<-list(ssf=EM1,bog=EM2,lagg=EM3)
+              EM_ch_comb<-list(ssf=EM1_ch,bog=EM2_ch,lagg=EM3_ch)
+              
+              EM_comb_list[[length(EM_comb_list)+1]]<-EM_comb
+              EM_ch_comb_list[[length(EM_ch_comb_list)+1]]<-EM_ch_comb
+
+              
+              
+              
+              if (dett == 0) next 
+                 contributions <- calculate_contributions(stream_obs, EM1, EM2, EM3, dett)
+              if (any(contributions[1:3] < 0)){
+                 contributions <- adjust_contributions(contributions)
+              }
+    
+            #  cont_dynamic[comb,]<-contributions
+      
+        for (col in 1:4) {
+          stf_predicted_comb[comb,col] <- contributions[1] * EM1_ch[col] + contributions[2] * EM2_ch[col] + contributions[3] * EM3_ch[col]
+        }
+         distance_dyn[comb,1] <-sqrt(sum((stream_obs_ch - stf_predicted_comb[comb,])^2))
+          }
+         }
+          }
+             
+  min_dist[stf,1]<- min(distance_dyn[[1]])
+  combnum_opt[stf,1]<- which(distance_dyn[[1]] == min_dist[stf, 1])
+  EM_comb_opt<-EM_comb_list[combnum_opt[stf,1]]
+  EM_comb_opt_stf_list[[length(EM_comb_opt_stf_list)+1]]<-EM_comb_opt
+
+  EM_ch_comb_opt<-EM_ch_comb_list[combnum_opt[stf,1]]
+  EM_ch_comb_opt_stf_list[[length(EM_ch_comb_opt_stf_list)+1]]<-EM_ch_comb_opt
+   
+  }       
+```  
+  
+  
+  
+  
+  
+  
+  
+  
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+  
+```{r}
+for  (stf in seq_len(stream_projection_season){
+  laggtime_SSF[stf,1]<-(EM_comb_opt_stf_list[stf][1]$date)- (stream_restmelt[stf,])
+}
+```
+  
+  
+  
+```{r plot prediction vs. observation (should corrected)}  
+# compare stf_predicted vs. stf_chem
+  
+  #X: MEASURED, Y: PREDICTED
+library(ggplot2)
+library(broom)
+#install.packages("ggpubr")
+library("ggpubr")
+
+
+SSFpoint_ch <- EM_chem_list[[83]][[1]]
+bogpoint_ch <- EM_chem_list[[83]][[2]]
+laggpoint_ch <- EM_chem_list[[83]][[3]]
+
+highlighted_points_ch <- data.frame(
+  ca = c(SSFpoint_ch $ca, bogpoint_ch $ca, laggpoint_ch $ca),
+  mg = c(SSFpoint_ch $mg, bogpoint_ch $mg, laggpoint_ch $mg),
+  mn = c(SSFpoint_ch $mn, bogpoint_ch $mn, laggpoint_ch $mn),
+  si = c(SSFpoint_ch $si, bogpoint_ch $si, laggpoint_ch $si),
+  label = c(SSFpoint_ch $name, bogpoint_ch $name, laggpoint_ch $name)  # Use 'name' as labels
+)
+
+
+  stream_restmelt<-stream_yr%>%filter(season=="rest of Melt")
+  
+  
+  EM1 <- highlighted_points[1, ]#ssf
+  EM1_ch <- highlighted_points_ch[1, ]
+  
+    EM2 <- highlighted_points[2, ]#bog
+    EM2_ch <- highlighted_points_ch[2, ]
+    
+      EM3 <- highlighted_points[3,]#lagg
+      EM3_ch <- highlighted_points_ch[3, ]
+
+     dett <- calculate_determinant(EM1, EM2, EM3)
+      
+      for (stf in seq_len(nrow(stream_projection_season))) {
+             stream_obs <- stream_projection_season[stf, ]
+             
+               contributions <- calculate_contributions(stream_obs, EM1, EM2, EM3, dett)
+              if (any(contributions[1:3] < 0)){
+                contributions <- adjust_contributions(contributions)
+             }
+              cont[stf,]<-contributions
+        }
+  
+   for (stf in seq_len(nrow(stream_projection_season))) {
+        for (col in 1:4) {
+          stf_predicted[stf, col] <- cont[stf,1] * EM1_ch[col] + cont[stf,2] * EM2_ch[col] + cont[stf,3] * EM3_ch[col]
+        }
+      }
+
+  merged<-cbind(predict=stf_predicted,obs=stream_restmelt)
+    
+  
+  
+
+  
+  
+  for (col in seq_len(ncol(stf_predicted))){
+    
+    model <- lm(stf_predicted[[col]] ~ stream_restmelt[[col]])
+    model_summary <- summary(model)
+    r2 <- summary(model)$r.squared
+    slope <- model_summary$coefficients[2, "Estimate"]
+    p_value<-model_summary$coefficients[2, "Pr(>|t|)"]
+    p_value_text <- if (p_value <= 0.05) "≤ 0.05" else format.pval(p_value)
+
+
+  #ca mg mn si
+    col_obs<-col+4
+    
+  
+
+ if (col==1){
+  # print(col)
+  # print(col_obs)
+   subset_merged <- merged[, c(col, col_obs)]
+    p_ca <- ggplot(subset_merged, aes(x = subset_merged[[2]], y = subset_merged[[1]])) +
+    geom_point(size=5,color = "black", fill = "darkgrey", stroke = 1, alpha = 0.8) +
+    geom_smooth(method = "lm", se = FALSE, color = "blue") +
+    labs(
+      x = paste0(names(stf_predicted)[col], " (observed)"),
+      y = paste0(names(stf_predicted)[col], " (predicted)"),
+      subtitle = paste("\n","  R² =", round(r2, 2), "| p-value ", p_value_text,"| slope=",round(slope,2))
+    ) +
+    theme_classic()+theme(
+    axis.title.y = element_text(margin = margin(r = 10),family = "Times", size = 16),    
+    axis.title.x = element_text(size = 16,family = "Times"),                               
+    axis.text = element_text(size = 16,family = "Times"),                                  
+    plot.subtitle = element_text(size = 16,family = "Times"),                             
+    plot.title = element_text(size = 16,family = "Times") 
+  )
+ }
+  
+
+  
+   if (col==2){
+    subset_merged <- merged[, c(col, col_obs)]
+  #  print(col)
+  # print(col_obs)
+    p_mg<- ggplot(subset_merged, aes(x = subset_merged[[2]], y = subset_merged[[1]])) +
+    geom_point(size=5,color = "black", fill = "darkgrey", stroke = 1, alpha = 0.8) +
+    geom_smooth(method = "lm", se = FALSE, color = "blue") +
+    labs(
+      x = paste0(names(stf_predicted)[col], " (observed)"),
+      y = paste0(names(stf_predicted)[col], " (predicted)"),
+      subtitle = paste("\n","  R² =", round(r2, 2), "| p-value ", p_value_text,"| slope=",round(slope,2))
+    ) +
+    theme_classic()+theme(
+    axis.title.y = element_text(margin = margin(r = 10),family = "Times", size = 16),    
+    axis.title.x = element_text(size = 16,family = "Times"),                               
+    axis.text = element_text(size = 16,family = "Times"),                                  
+    plot.subtitle = element_text(size = 16,family = "Times"),                             
+    plot.title = element_text(size = 16,family = "Times") 
+  )
+    
+   }
+  
+   if (col==3){
+   # print(col)
+ #  print(col_obs)
+    subset_merged <- merged[, c(col, col_obs)]
+    
+    p_mn<- ggplot(subset_merged, aes(x = subset_merged[[2]], y = subset_merged[[1]])) +
+    geom_point(size=5,color = "black", fill = "darkgrey", stroke = 1, alpha = 0.8) +
+    geom_smooth(method = "lm", se = FALSE, color = "blue") +
+    labs(
+      x = paste0(names(stf_predicted)[col], " (observed)"),
+      y = paste0(names(stf_predicted)[col], " (predicted)"),
+      subtitle = paste("\n","  R² =", round(r2, 2), "| p-value ", p_value_text,"| slope=",round(slope,2))
+    ) +
+    theme_classic()+theme(
+    axis.title.y = element_text(margin = margin(r = 10),family = "Times", size = 16),    
+    axis.title.x = element_text(size = 16,family = "Times"),                               
+    axis.text = element_text(size = 16,family = "Times"),                                  
+    plot.subtitle = element_text(size = 16,family = "Times"),                             
+    plot.title = element_text(size = 16,family = "Times") 
+  )
+   }
+  
+ #  if (col==4){
+  #  print(col)
+  # print(col_obs)
+   subset_merged <- merged[, c(col, col_obs)]
+  p_si <- ggplot(subset_merged, aes(x = subset_merged[[col_obs]], y = subset_merged[[col]])) +
+    geom_point(size=5,color = "black", fill = "darkgrey", stroke = 1, alpha = 0.8) +
+    geom_smooth(method = "lm", se = FALSE, color = "blue") +
+    labs(
+      x = paste0(names(stf_predicted)[col], " (observed)"),
+      y = paste0(names(stf_predicted)[col], " (predicted)"),
+      subtitle = paste("\n","  R² =", round(r2, 2), "| p-value ", p_value_text,"| slope=",round(slope,2))
+    ) +
+    theme_classic()+theme(
+    axis.title.y = element_text(margin = margin(r = 10),family = "Times", size = 16),    
+    axis.title.x = element_text(size = 16,family = "Times"),                               
+    axis.text = element_text(size = 16,family = "Times"),                                  
+    plot.subtitle = element_text(size = 16,family = "Times"),                             
+    plot.title = element_text(size = 16,family = "Times") 
+  )
+  }
+
+  #}
+  
+# predictedplots<-ggarrange(p_ca,p_mg,p_mn,p_si,labels=c("Ca","Mg","Mn","Si"),ncol=2,nrow=2)
+  
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r ezafe}
+
+#  plot_data <- data.frame(
+ #   sr_predicted = stf_predicted$si,
+ #   sr_chem = stream_rest_rm$si
+#  )
+  model <- lm(ca_predicted ~ ca_chem, data = plot_data)
+  model_summary <- summary(model)
+  r2 <- summary(model)$r.squared
+  p_value <- coef(summary(model))["ca_chem", "Pr(>|t|)"]
+  slope <- model_summary$coefficients["ca_chem", "Estimate"]
+  
+  
+ p1 <-ggplot(plot_data, aes(x = sr_chem, y = sr_predicted)) +
+    geom_point() +
+    geom_smooth(method = "lm", se = FALSE, color = "blue") +
+    labs(
+      x = "Si (measured)",
+      y = "Si (predicted)",
+      #title = "Sr",
+      subtitle = paste("R² =", round(r2, 2), "| p-value =", format.pval(p_value))) +
+    theme_classic()
+
+
+
+  # time series
+  ggplot(cont_long, aes(x = DoY, y = value, color = variable)) +
+    #geom_line() +
+    geom_point(size=4) +
+    labs(x = "DoY", y = "Source water contribution", color = "Variable") +
+    theme_minimal() +
+    scale_color_manual(values = c("F1" = "#5A0881", "F2" = "#FED300", "F3" ="#6b7701"),
+                       labels = c("F1" = "OF", "F2" = "Bog porewater", "F3" = "Lagg porewater")) +
+    scale_x_continuous(breaks = seq(0, max(cont_long$DoY, na.rm = TRUE), by = 30)) +
+    theme(plot.title = element_text(hjust = 0.5))
+  
+  
+  
+  
+  #what are the diff days for different contributions
+  cont[id,1],EMs_final_avg[stream_obs_id==id,8] #cont[id,1]: first column is for EM1
+  
+  #for situations when F1, F2, F3 are above 0.5, 
+```
+
+
+
+  
+  
+  
+```{r find pairs}
+
+
+filtered_list <- lapply(stat_list, function(x) {
+  if (!is.na(x$r2) && !is.na(x$p_value) && x$r2 >= 0.5 ) {
+    return(x)
+  } else {
+    return(NULL)
+  }
+})
+
+
+filtered_list <- Filter(Negate(is.null), filtered_list) #find all that are not null
+
+
+print(filtered_list)
+
+if (length(filtered_list) > 0) {
+  max_r2_element <- filtered_list[[which.max(sapply(filtered_list, function(x) x$r2))]]
+  print(max_r2_element)
+  max_r2_index <- which.max(sapply(filtered_list, function(x) x$r2))
+  original_index <- which(sapply(stat_list, identical, filtered_list[[max_r2_index]]))
+
+  print(original_index)
+} else {
+  print("No elements meet the criteria")
+}
+
+```
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r reconstruction,echo=FALSE}
+#DOES NOT WORK WELL
+#select a set of three out of these and reconstruct the stream chemistry 
+#if r2 and p-value satisfied-> go with distance criteria; then calculate contributions
+
+#cloud of data:
+#stream_projection_season
+
+#EMs:
+ 
+ # stf_dormant_projection_season
+ # stf_freshet_projection_season
+#  stf_growing_projection_season
+#  sub_projection_season
+#  surf_projection_season
+#  bog_projection_season
+ # lagg_projection_season
+#  precip_projection_season
+
+
+
+  EM1_chem<-sub_rm #or sub_yr
+  EM2_chem<-bog_rm
+  EM3_chem<-lagg_rm
+    
+ #   lagg_rm<-lagg_yr%>%dplyr::select(-DoY, -season,-date,-name)#rest melt [,-c(5:8)]   growing[,-c(6:9)]
+ # bog_rm<-bog_yr%>%dplyr::select(-DoY, -season,-date,-name) #[,-c(5:8)] #[,-c(6:9)]
+ # surf_rm<-surf_yr%>%dplyr::select(-DoY, -season,-date,-name)#[,-c(5:8)]#growing[,-c(5,6,8,9)]
+#  sub_rm<-sub_yr%>%dplyr::select(-DoY, -season,-date,-name)#[,-c(5:8)]#[,-c(5,6,8,9)]
+#  precip_rm<-precip_yr%>%dplyr::select(-DoY, -season,-date,-name)#[,-c(5:8)]# growing: [,-c(6:9)]
+#  stream_freshet_rm<-stf_freshet_yr%>%dplyr::select(-DoY, -season,-date,-name)
+#  stream_dormant_rm<-stf_dormant_yr%>%dplyr::select(-DoY, -season,-date,-name)
+#  stream_growing_rm<-stf_growing_yr%>%dplyr::select(-DoY, -season,-date,-name)
+
+stat <- data.frame(
+  ca = c(10, 10, 10),  
+  mg = c(10, 10, 10), 
+  mn = c(10, 10, 10),  
+  si = c(10, 10, 10)
+  )
+stat_list<-list()
+EM_proj_list<-list()
+EM_chem_list<-list()
+
+
+stream_yr_ch_restmelt<-stream_yr%>%filter(season=="rest of Melt")
+stf_predicted<-stream_yr_ch_restmelt
+  
+
+   for (em1 in c(1:nrow(sub_projection_season))){ 
+       EM1<-sub_projection_season[em1,]
+       EM1_ch<-EM1_chem[em1,]
+       
+     for (em2 in c(1:nrow(bog_projection_season))){ 
+       EM2<-bog_projection_season[em2,]
+       EM2_ch<-EM2_chem[em2,]
+       
+        for (em3 in c(1:nrow(lagg_projection_season))){
+          EM3<-lagg_projection_season[em3,]
+          EM3_ch<-EM3_chem[em3,]
+          
+          #comb<-comb+1
+         
+         
+          
+          for  (stf in c(1:nrow(stream_projection_season))){
+           stream_obs<-stream_projection_season[stf,]
+          
+           #determinant
+    dett<- (-EM2[[1]]*EM1[[2]])+(EM3[[1]]*EM1[[2]])+(EM1[[1]]*EM2[[2]])+(-EM3[[1]]*EM2[[2]])+(-EM1[[1]]*EM3[[2]])+(EM2[[1]]*EM3[[2]])
+
+
+    #contributions
+    F1<-(((EM2[[1]]*EM3[[2]])-(EM3[[1]]*EM2[[2]]))+((EM2[[2]]-EM3[[2]])*stream_obs[[1]])+((EM3[[1]]-EM2[[1]])*stream_obs[[2]]))/dett
+    F2<-(((EM3[[1]]*EM1[[2]])-(EM1[[1]]*EM3[[2]]))+((EM3[[2]]-EM1[[2]])*stream_obs[[1]])+((EM1[[1]]-EM3[[1]])*stream_obs[[2]]))/dett
+    F3<-(((EM1[[1]]*EM2[[2]])-(EM2[[1]]*EM1[[2]]))+((EM1[[2]]-EM2[[2]])*stream_obs[[1]])+((EM2[[1]]-EM1[[1]])*stream_obs[[2]]))/dett
+
+    #F1<-data.frame(F1)
+    #F2<-data.frame(F2)
+    #F3<-data.frame(F3)
+    #cont<-data.frame(F1=F1,F2=F2,F3=F3)
+    #corrections
+    #if any of F1,F2,F3 was negative:
+    #if two of them were negative-> make them zero and make the remaining 1
+    #if only one was negative, make it zero and calculate for the remaining Fs:
+    #for that measurement: read the streamflow's X1 & X2
+
+    if (F1<0 &F2<0){
+      F1<-0
+      F2<-0
+      F3<-1
+    }
+    else if (F1<0&F3<0){
+      F1<-0
+      F3<-0
+      F2<-1
+    }
+    else if (F2&F3 <0){
+      F1<-1
+      F2<-0
+      F3<-0
+    }
+    
+    else if (F3<0){
+      F3<-0
+      a<-sqrt((EM2[[1]]-EM1[[1]])^2+(EM2[[2]]-EM1[[2]])^2)
+      b<-sqrt((stream_obs[[1]]-EM1[[1]])^2+(stream_obs[[2]]-EM1[[2]])^2) #em1
+      c<-sqrt((stream_obs[[1]]-EM2[[1]])^2+(stream_obs[[2]]-EM2[[2]])^2) #em2
+      x<-(a^2+b^2-c^2)/(2*a^2)
+      y<-1-x
+      F2<-x
+      F1<-y
+    }
+    
+    
+    else if (F2<0){
+      F2<-0
+      a<-sqrt((EM3[[1]]-EM1[[1]])^2+(EM3[[2]]-EM1[[2]])^2)
+      b<-sqrt((stream_obs[[1]]-EM1[[1]])^2+(stream_obs[[2]]-EM1[[2]])^2) #em1
+      c<-sqrt((stream_obs[[1]]-EM3[[1]])^2+(stream_obs[[2]]-EM3[[2]])^2) #em2
+      x<-(a^2+b^2-c^2)/(2*a^2)
+      y<-1-x
+      if (x<0){
+        x<-0
+        y<-1}
+      else if (y<0){
+        y<-0
+        x<-1}
+      F3<-x
+      F1<-y
+      
+    }
+    
+    else if (F1<0){
+      F1<-0
+      a<-sqrt((EM3[[1]]-EM2[[1]])^2+(EM3[[2]]-EM2[[2]])^2)
+      b<-sqrt((stream_obs[[1]]-EM2[[1]])^2+(stream_obs[[2]]-EM2[[2]])^2) #em1
+      c<-sqrt((stream_obs[[1]]-EM3[[1]])^2+(stream_obs[[2]]-EM3[[2]])^2) #em2
+      x<-(a^2+b^2-c^2)/(2*a^2)
+      y<-1-x
+      if (x<0){
+        x<-0
+        y<-1}
+      else if (y<0){
+        y<-0
+        x<-1}
+      F3<-x
+      F2<-y
+    }
+         
+  
+  
+
+
+  for (col in (1: 4)){
+    #stf_predicted[i,col]<-cont[i,1]*EM1_chem[i,col]+cont[i,2]*EM2_chem[i,col]+cont[i,3]*EM3_chem[i,col]
+    stf_predicted[,col]<-F1*EM1_ch[[col]]+F2*EM2_ch[[col]]+F3*EM3_ch[[col]]
+    model <- lm(stf_predicted[[col]] ~ stream_yr_ch_restmelt[[col]])
+   # r2[i,col] <- summary(model)$r.squared
+    r2 <- summary(model)$r.squared
+    p_value <- coef(summary(model))[2, "Pr(>|t|)"]
+    slope <- summary(model)$coefficients[2, "Estimate"]
+    if  (!is.na(r2) && !is.na(p_value) && round(r2, 2) >= 0.5 && round(p_value, 2) <= 0.05) {
+      stat[1,col]<-r2
+      stat[2,col]<-p_value
+      stat[3,col]<-slope
+      stat_list[[length(stat_list) + 1]] <- stat
+      
+       EM_proj_lst<-list(EM1,EM2,EM3)
+       EM_chem_lst<-list(EM1_ch,EM2_ch,EM3_ch)
+          
+       EM_proj_list[[length(EM_proj_list) + 1]]<-EM_proj_lst
+       EM_chem_list[[length(EM_chem_list) + 1]]<-EM_chem_lst
+    }
+ 
+   # p_value[i,col] <- coef(summary(model))[2, "Pr(>|t|)"]
+   # slope[i,col] <- summary(model)$coefficients[2, "Estimate"]
+  }
+  
+       }
+     }
+   }
+}
+  
+```
+  
+  
+
+
+
+
+
+```{r ezafat automation}
+
+       
+  
+  for (dormant in c(1:nrow(stf_dormant_projection_season))){
+    for (freshet in c(1:nrow(stf_freshet_projection_season))){
+      for (growing in c(1:nrow(stf_growing_projection_season))){ 
+        for (sub in c(1:nrow(sub_projection_season))){ 
+          for (surf in  c(1:nrow(surf_projection_season))){ 
+            
+             
+                for (precip in  c(1:nrow(precip_projection_season))){ 
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  #sub_projection_notgrowing<-sub_projection_season %>% filter(season != "Growing")
+  #surf_projection_notgrowing<-surf_projection_season %>% filter(season != "Growing")
+  #bog_projection_notgrowing<-bog_projection_season %>% filter(season != "Growing")
+  #lagg_projection_notgrowing<-lagg_projection_season %>% filter(season != "Growing")
+ # precip_projection_notgrowing<-precip_projection_season %>% filter(season != "Growing")
+ 
+  
+  
+
+#  1.Generate all possible combinations of three observations from the data frames.
+   #mixing diagram informs which combinations are valid
+ # 1-1) Triangle Formation Check: Verify if the three selected points form a valid triangle. This can be done by ensuring the area is non-zero.
+#1-2) Convex Hull Check: Determine if the triangle can hold at least half of the observations from the stream_projection_season. For this, the selected triangle should form a convex hull that contains enough of the data points.
+  
+#2.Iteratively select three observations and assign them to EM1, EM2, and EM3.
+#3.Perform calculations (including dett, F1, F2, F3, and any corrections).
+#4.Use the results to predict values for stf_predicted and then perform regression for each column.
+#5.Store the combination if the regression results are satisfactory.
+#6.Repeat for all possible combinations.
+    
+#select three observations from the specified data frames while ensuring that no two observations in a set come from the same data frame
+  
+   library(sp)
+library(geometry)
+
+# Step 1: Combine candidate datasets
+all_candidates <- rbind(
+  stf_dormant_projection_season,
+  stf_freshet_projection_season,
+  sub_projection_notgrowing%>%select(-group),
+  surf_projection_notgrowing%>%select(-group),
+  bog_projection_notgrowing%>%select(-group),
+  lagg_projection_notgrowing%>%select(-group),
+  precip_projection_notgrowing%>%select(-group)
+)
+
+#pick three out of the candidates and save them as
+combinations <- combn(1:nrow(all_candidates), 3)
+
+# Iterate over each combination and save the three points as EM1, EM2, EM3
+results <- lapply(1:ncol(combinations), function(i) {
+  indices <- combinations[, i]
+  list(
+    EM1 = all_candidates[indices[1], ],
+    EM2 = all_candidates[indices[2], ],
+    EM3 = all_candidates[indices[3], ]
+  )
+})
+
+  
+
+
+  
+
+
+  stream_projection_season<-transform(stream_projection_season, color="stream")
+  
+   #proceeding the work with lagg, bog and surf rf.
+  EM_projections <- rbind(
+     transform(lagg_projection_season, color="lagg pz"), 
+     transform(bog_projection_season, color="bog pz"),
+    transform(surf_projection_season, color="OF")
+    #transform(sub_projection_season, color="SSF"),
+    #transform(precip_projection_season, color="precip")
+  )
+  
+  lagg_projection_season<-lagg_projection_season%>%mutate(color="lagg pz")
+  bog_projection_season<-bog_projection_season%>%mutate(color="bog pz")
+  surf_projection_season<-surf_projection_season%>%mutate(color="OF")
+  
+  stf_chem<-stream_tracers_yr
+  
+   library(dplyr)
+  
+  EM_waterchem <- rbind(
+    transform((lagg_yr[,-10])%>%rename(location= piezometer),color="lagg pz"),
+     transform((bog_yr[,-10])%>%rename(location= piezometer),color="bog pz"),
+    transform(surf_yr%>%rename(location= name),color="OF")
+    #transform(sub_yr%>%rename(location= name),color="SSF"),
+    #transform(precip_yr%>%rename(location= group),color="precip")
+  )
+  
+  EM1_chem<-EM_waterchem%>%filter(color=="lagg pz")
+  EM2_chem<-EM_waterchem%>%filter(color=="bog pz")
+  EM3_chem<-EM_waterchem%>%filter(color=="OF")
+ # EM2_chem<-EM_waterchem%>%filter(color=="SSF")
+  #EM3_chem<-EM_waterchem%>%filter(color=="precip")
+  
+  
+  
+  library(dplyr)
+  library(tidyr)
+  
+  #EMs (precip and upland) for the lagg
+  #(pc1)lagg
+  
+  
+  # optimal_EMs <- data.frame()
+  
+  comb<-0
+  
+  results<-vector("list", nrow(stream_projection_season))
+  
+  cont<-data.frame(F1=F1, F2=F2, F3=F3, sum=F1+F2+F3)
+  
+  r2<-data.frame(matrix(0, nrow = 10, ncol = 7))
+  p_value<-data.frame(matrix(0, nrow = 10, ncol = 7))
+  slope<-data.frame(matrix(0, nrow = 10, ncol = 7))
+  
+  start_date_lagg <- min(lagg_projection_season$date)
+  start_date_bog <- min(bog_projection_season$date)
+  start_date_surf <- min(surf_projection_season$date)
+  
+  min_start_stream <- max(start_date_lagg, start_date_bog, start_date_surf)
+  
+  stream_for_analysis <- stream_projection_season %>%
+    filter(date >= min_start_stream)
+  stream_yr_ch_restmelt <- stream_tracers_yr%>%
+    filter(date >= min_start_stream)
+  
+  comb<-0
+ # all_EMs <- list()
+  for (i in 1:nrow(stream_for_analysis)) {
+    stream_obs <- stream_for_analysis[i,]
+    date_obs<-stream_obs$date
+    lagg_projection_before<-lagg_projection_season%>%filter(date<=date_obs)
+  
+    bog_projection_before<-bog_projection_season%>%filter(date<=date_obs)
+    surf_projection_before<-surf_projection_season%>%filter(date<=date_obs)
+    
+    for (em1 in 1:nrow(lagg_projection_before)) {
+      for (em2 in 1:nrow(bog_projection_before)) {
+        for (em3 in 1:nrow(surf_projection_before)) {
+         
+          
+      EM1<- lagg_projection_before[em1,]
+      EM2<- bog_projection_before[em2,]
+      EM3<- surf_projection_before[em3,]
+  
+      comb<-comb+1
+  
+  
+    
+  
+    
+    cont[comb,"F1"]<-F1
+    cont[comb,"F2"]<-F2
+    cont[comb,"F3"]<-F3
+    cont[comb,"sum"]<-(F1+F2+F3)
+    cont[comb,"combination"]<-
+    
+    results[[i]]$cont<-cont
+    
+    
+  #stf prediction
+  #avg_ca ; avg_mg ;avg_al; avg_mn; avg_si ;avg_sr; avg_toc
+  #stf_predicted<-stream_tracers_yr
+  
+
+  
+   
+    
+    
+  
+  
+  name_EM1<-EM1$name
+  season_EM1<-EM1$season
+  
+  name_EM2<-EM2$name
+  season_EM2<-EM2$season
+  
+  name_EM3<-EM3$name
+  season_EM3<-EM3$season
+  
+  if (name_EM1=="lagg"){
+    EM1_chem<-lagg_yr
+    else if (name_EM1=="bog"){
+      EM1_chem<-bog_yr
+      else if (name_EM1=="SSF"){
+        EM1_chem<-surf_yr
+        else if (name_EM1=="OF"){
+          EM1_chem<-sub_yr
+          else if (name_EM1=="Precip"){
+            EM1_chem<-precip_yr
+            else if (season_EM1=="Dormant"){
+              EM1_chem<-stf_dormant_yr
+              else if (season_EM1=="Freshet"){
+                EM1_chem<-stf_freshet_yr
+                else if (season_EM1=="rest of Melt"){
+                  EM1_chem<-stream_yr%>%filter(season=="rest of Melt")
+              
+  
+  
+
+
+  results[[i]]$r2<-r2
+
+  results[[i]]$p_value<-p_value
+
+  results[[i]]$slope<-slope
+  
+
+        }
+      }
+    }
+  }
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r mixing diagram with biplots_2d_gradual color based on DoY}
+ # install.packages("plotly")
+  library(plotly)
+  library(ggplot2)
+  library (ggrepel)
+  x_limits <- c(-8, 6)
+  y_limits <- c(-3, 6)
+  colors_stf<-c("Stream"="blue")
+ # c("Freshet" = "skyblue", 
+ #                                "rest of Melt" = "blue", 
+ #                                "Growing" = "darkgreen", 
+  #                               "Dormant" = "darkgrey")) 
+  
+
+  colors_EMs <-c("bog pz"=alpha("#FED300",0.6), "lagg pz"=alpha("#6b7701",0.8), "OF"=alpha("#5A0881",0.6),  "SSF"=alpha("chocolate4",0.4),"Precip"=alpha("#5AEEFA",0.8))
+  
+  
+  
+  p <- ggplot(data = stream_projection_season, aes(x = X1, y = X2)) +
+  geom_point(aes(color = name, size = DoY, 
+                 text = paste("DoY:", DoY, "<br>X1:", round(X1, 2), "<br>X2:", round(X2, 2), "<br>Location:", name)),
+             alpha = 0.7, shape = 15) +
+   # facet_wrap(~season)+
+  labs(x ="PC1 (85.7%)", y = "PC2 (8.7%)") + #"PC 1 (54.3%)", y = "PC 2 (26.6%)" 
+  scale_x_continuous(limits = x_limits, breaks = seq(-8, 6, by = 2)) +
+  scale_y_continuous(limits = y_limits, breaks = seq(-5, 8, by = 2)) +
+  theme(text = element_text(family = "Times", size = 14), 
+        axis.title = element_text(size = 14), 
+        axis.text = element_text(size = 14),  
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 14),
+        panel.grid.major = element_line(color = "grey90"),
+        panel.grid.minor = element_line(color = "grey90"),
+        panel.background = element_rect(fill = "white", color = NA),
+        panel.border = element_blank()) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  
+  scale_size_continuous(range = c(0, 8), name = "DoY") + 
+  
+
+  geom_point(data = all_projections, aes(x = X1, y = X2, color = color, size = DoY,
+                                         text = paste("DoY:", DoY, "<br>X1:", round(X1, 2), "<br>X2:", round(X2, 2), "<br>Location:", name)), 
+             alpha = 0.5) + 
+  
+  guides(shape = guide_legend(override.aes = list(size = 14))) +
+  
+
+  scale_color_manual(values = c(colors_stf, colors_EMs)) +
+  guides(color = guide_legend(title = " ") )+
+  
+
+  geom_segment(data = arrows_df, aes(x = 0, y = 0, xend = PC1 * 5, yend = PC2 * 5),
+               arrow = arrow(length = unit(0.2, "cm"), type = "closed"),
+               color = "black") +
+  geom_text_repel(data = arrows_df, aes(x = PC1 * 5, y = PC2 * 5, label = variable),
+                  family = "Times", size = 14 / .pt, vjust = 0.5, hjust = -0.75, max.overlaps = Inf)
+
+p
+
+
+interactive_plot <- ggplotly(p, tooltip = "text") %>%
+  add_annotations(x = arrows_df$PC1 * 5, 
+                  y = arrows_df$PC2 * 5, 
+                  text = arrows_df$variable, 
+                  showarrow = FALSE,
+                  font = list(family = "Times", size = 14))
+
+
+```
+
+
+
+
+
+
+
+
+
+
+```{r mixing diagram with biplots_2d- grouping them with DoY range_rest of melt }
+
+ # install.packages("plotly")
+  library(plotly)
+  library(ggplot2)
+  library (ggrepel)
+  x_limits <- c(-8, 4)
+  y_limits <- c(-2, 2)
+  
+  library(dplyr)
+
+stream_projection_season <- stream_projection_season %>%
+  mutate(group = case_when(
+    DoY >= 102 & DoY <= 125 ~ "Constant Rain 1",
+    DoY >= 128 & DoY <= 140 ~ "Inter Event",
+    DoY >= 141 & DoY <= 151 ~ "Constant Rain 2",
+    TRUE ~ "Other"
+  ))
+
+stream_projection_season_rains<-stream_projection_season%>%filter(group!="Other")
+
+shapes_groups <- c("Constant Rain 1" = 15,  # Square
+                   "Inter Event" = 16,     # Circle
+                   "Constant Rain 2" = 17) # Triangle
+                   #"Other" = 18)           # Diamond
+
+
+
+p <- ggplot(data = stream_projection_season_rains, aes(x = X1, y = X2)) +
+  geom_jitter(aes(shape = group, color = name, 
+                 text = paste("DoY:", DoY, "<br>X1:", round(X1, 2), "<br>X2:", round(X2, 2), "<br>Location:", name)),
+             size = 5, alpha = 0.6) +
+  #facet_wrap(~season) +
+  labs(x = "PC1 (85.7%)", y = "PC2 (8.7%)") + #rest of melt 0.8567513 0.0868537. #growing: "PC1 (54.3%)", y = "PC2 (26.6%)"
+  scale_x_continuous(limits = x_limits, breaks = seq(-8, 6, by = 2)) +
+  scale_y_continuous(limits = y_limits, breaks = seq(-5, 8, by = 2)) +
+  theme(text = element_text(family = "Times", size = 14), 
+        axis.title = element_text(size = 14), 
+        axis.text = element_text(size = 14),  
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 14),
+        panel.grid.major = element_line(color = "grey90"),
+        panel.grid.minor = element_line(color = "grey90"),
+        panel.background = element_rect(fill = "white", color = NA),
+        panel.border = element_blank()) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black")
+
+
+p <- p + 
+  geom_jitter(data = all_projections, 
+             aes(x = X1, y = X2, shape = group, color = color, 
+                 text = paste("DoY:", DoY, "<br>X1:", round(X1, 2), "<br>X2:", round(X2, 2), "<br>Location:", color)),
+             size = 5,alpha=0.7) +
+  guides(shape = guide_legend(override.aes = list(size = 14)))
+
+
+p <- p + 
+  scale_color_manual(values = c(colors_stf, colors_EMs)) +  # Keep colors fixed
+  scale_shape_manual(values = shapes_groups) +              # Map shapes to groups
+  guides(color = guide_legend(title = " "), shape = guide_legend(title = "Group"))
+
+
+p <- p +
+  geom_segment(data = arrows_df, aes(x = 0, y = 0, xend = PC1 * 5, yend = PC2 * 5),
+               arrow = arrow(length = unit(0.2, "cm"), type = "closed"),
+               color = "black") +
+  geom_text_repel(data = arrows_df, aes(x = PC1 * 5, y = PC2 * 5, label = variable),
+                  family = "Times", size = 14 / .pt, vjust = 0.5, hjust = -0.75, max.overlaps = Inf)
+
+
+p
+
+
+
+
+interactive_plot2 <- ggplotly(p, tooltip = "text")%>%
+  add_text(x = arrows_df$PC1 * 14, 
+           y = arrows_df$PC2 * 10, 
+           text = arrows_df$variable,
+           showlegend = FALSE)
+
+```
+
+
+
+
+```{r mixing diagram with biplots_2d- grouping them with DoY range_ growing }
+
+ # install.packages("plotly")
+  library(plotly)
+  library(ggplot2)
+  library (ggrepel)
+  x_limits <- c(-8, 4)
+  y_limits <- c(-2, 2)
+  
+  library(dplyr)
+
+stream_projection_season_growing <- stream_projection_season %>%
+  mutate(group = case_when(
+    DoY >= 166 & DoY <= 193 ~ "Event 1",
+    DoY >= 199 & DoY <= 213 ~ "Event 2",
+    DoY >= 213 & DoY <= 237 ~ "Event 3",
+    DoY >= 192 & DoY <= 199 ~ "Inter 1&2",
+    TRUE ~ "Other"
+  ))
+
+stream_projection_season_growing_rains<-stream_projection_season_growing#%>%filter(group!="Other")
+
+shapes_groups <- c("Event 1" = 15,  # Square
+                       # Circle
+                   "Event 2" = 17, # Triangle
+                   "Event 3" = 18,
+                   "Inter 1&2"=16,
+                   "Other"=10)           # Diamond
+
+
+
+p <- ggplot(data = stream_projection_season_growing_rains, aes(x = X1, y = X2)) +
+  geom_jitter(aes(shape = group, color = name, 
+                 text = paste("DoY:", DoY, "<br>X1:", round(X1, 2), "<br>X2:", round(X2, 2), "<br>Location:", name)),
+             size = 5, alpha = 0.7) +
+  #facet_wrap(~season) +
+  labs(x = "PC1 (54.3%)", y = "PC2 (26.6%)") + #rest of melt 0.8567513 0.0868537. #growing: "PC1 (54.3%)", y = "PC2 (26.6%)"
+  scale_x_continuous(limits = x_limits, breaks = seq(-8, 6, by = 2)) +
+  scale_y_continuous(limits = y_limits, breaks = seq(-5, 8, by = 2)) +
+  theme(text = element_text(family = "Times", size = 14), 
+        axis.title = element_text(size = 14), 
+        axis.text = element_text(size = 14),  
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 14),
+        panel.grid.major = element_line(color = "grey90"),
+        panel.grid.minor = element_line(color = "grey90"),
+        panel.background = element_rect(fill = "white", color = NA),
+        panel.border = element_blank()) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black")
+
+
+p <- p + 
+  geom_jitter(data = all_projections, 
+             aes(x = X1, y = X2, shape = group, color = color, 
+                 text = paste("DoY:", DoY, "<br>X1:", round(X1, 2), "<br>X2:", round(X2, 2), "<br>Location:", color)),
+             size = 5,alpha=0.7) +
+  guides(shape = guide_legend(override.aes = list(size = 14)))
+
+
+p <- p + 
+  scale_color_manual(values = c(colors_stf, colors_EMs)) +  # Keep colors fixed
+  scale_shape_manual(values = shapes_groups) +              # Map shapes to groups
+  guides(color = guide_legend(title = " "), shape = guide_legend(title = "Group"))
+
+
+p <- p +
+  geom_segment(data = arrows_df, aes(x = 0, y = 0, xend = PC1 * 5, yend = PC2 * 5),
+               arrow = arrow(length = unit(0.2, "cm"), type = "closed"),
+               color = "black") +
+  geom_text_repel(data = arrows_df, aes(x = PC1 * 5, y = PC2 * 5, label = variable),
+                  family = "Times", size = 14 / .pt, vjust = 0.5, hjust = -0.75, max.overlaps = Inf)
+
+
+p
+
+
+
+
+interactive_plot2 <- ggplotly(p, tooltip = "text")%>%
+  add_text(x = arrows_df$PC1 * 14, 
+           y = arrows_df$PC2 * 10, 
+           text = arrows_df$variable,
+           showlegend = FALSE)
+
+```
+
+
+
+
+
+
+
+
+
+## Introduction 
+This example publication serves as a motivation on how to create reproducible documents in R and aims to promote reproducible research in general.
+
+### Dominant Processes
+##### Time series of constituents
+
+
+##### Boxplots of constituents
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ta inja ye bahsayi rooye tracers kardim. Amma biyaym cheshmamoono bebandim va faqat az rooye moadelat donbale contribution begardim va bebinim kodum solutions mitoone a given stream water ro khoob shabihsazi kone. Ye joor masaleye optimization hast. 
+
+
+```{r select tracers _ data}
+
+
+select_tracers_doc <- function(df) {
+  selected_df <- df %>%
+    dplyr::select("ca","mg","al","mn","si","sr","npoc","tc.ic","date")
+  return(selected_df)
+}
+select_tracers_for_upland <- function(df) {
+  selected_df <- df %>%
+    dplyr::select("ca","mg","al","mn","si","sr","npoc","tc.ic","date")
+  return(selected_df)
+}
+select_tracers_toc <- function(df) {
+  selected_df <- df %>%
+    dplyr::select("ca","mg","al","mn","si","sr","toc","date")
+  return(selected_df)
+}
+
+select_tracers_withdate <- function(df) {
+  selected_df <- df %>%
+    dplyr::select("ca","mg","al","mn","si","sr","npoc","tc.ic","date")
+  return(selected_df)
+}
+
+select_tracers_withpiezometer <- function(df) {
+  selected_df <- df %>%
+    dplyr::select("ca","mg","al","mn","si","sr","toc","date")
+  return(selected_df)
+}
+
+
+surf_slct<-select_tracers_for_upland(surf_rf)%>%mutate(name="OF")
+
+surf_slct <- surf_slct %>%
+  mutate(toc = ifelse(!is.na(npoc), npoc,
+                      ifelse(!is.na(tc.ic), tc.ic,
+                             (npoc + tc.ic) / 2)))
+
+surf_slct<-dplyr::select(surf_slct,ca,mg,al,mn,si,sr,toc,date)%>%na.omit()
+
+sub_slct<-select_tracers_for_upland(sub_rf)%>%mutate(name="SSF")
+
+sub_slct <- sub_slct %>%
+  mutate(toc = ifelse(!is.na(npoc), npoc,
+                      ifelse(!is.na(tc.ic), tc.ic,
+                             (npoc + tc.ic) / 2)))
+
+sub_slct<-dplyr::select(sub_slct,ca,mg,al,mn,si,sr,toc,date)%>%na.omit()
+
+bog_slct<-select_tracers_withpiezometer(bog_pore_week)%>%mutate(name="bog")%>%na.omit()
+lagg_slct<-select_tracers_withpiezometer(lagg_pore_week)%>%mutate(name="lagg")%>%na.omit()
+
+precip_slct<-select_tracers_toc(event_precip)%>%mutate(name="Precip")%>%na.omit()
+
+stream_slct<-select_tracers_withdate(stream_data)%>%mutate(year=year(date))%>%mutate(name="Stream")
+stream_slct <- stream_slct %>%
+  mutate(toc = ifelse(!is.na(npoc), npoc,
+                      ifelse(!is.na(tc.ic), tc.ic,
+                             (npoc + tc.ic) / 2)))
+
+stream_slct<-dplyr::select(stream_slct,ca,mg,al,mn,si,sr,toc,date)%>%na.omit()
+
+
+```
+
+
+
+```{r mixing_space}
+ data_mixing_space<-stream_tracers_yr[-c(8:12)]
+  #pca
+  pca_mixing <-princomp(data_mixing_space, cor=TRUE) #eigenvalue decomposition #using correlation matrix does mean that we are using the standardized version of data
+  summary(pca_mixing)
+  
+  
+  # Extracts Necessary Components
+  columns<-ncol(data_mixing_space) #columns=14
+  Comp1<-pca_mixing$loading[1:columns]
+  Comp2<-pca_mixing$loading[ (columns+1) : (2*columns) ] #18+1 goes in the second row
+  dim<-2 #2 dimensions
+  comps<-pca_mixing$loading[1:(columns*dim)]
+  V<-as.matrix(data.frame(split(comps, 1:columns)))
+  V_named<-V
+  colnames(V_named)<-c("Ca","Mg","Mn","Al","Si","Sr","TOC")
+  
+  #From the file  #timeseries_lower right of mixing diagram
+  # Produces Standardized Data
+  lagg_rm<-lagg_yr[,-c(8:12)]
+  bog_rm<-bog_yr[,-c(8:12)]
+  surf_rm<-surf_yr[,-c(8:12)]
+  sub_rm<-sub_yr[,-c(8:12)]
+  precip_rm<-precip_yr[,-c(8:11)]
+  
+  
+  stddata<-data_mixing_space
+  mean<-NULL
+  sd<-NULL
+  for (i in names(data_mixing_space)) {
+    mean[[i]]<-mean(data[[i]]) #set na.rm to TRUE if NA values should be ignored
+    sd[[i]]<-sd(data[[i]]) #set na.rm to TRUE if NA values should be ignored
+    stddata[[i]]=(data_mixing_space[[i]]-mean[[i]])/sd[[i]]
+  }
+  
+  stdlagg<-lagg_rm
+  for (i in names(data_mixing_space)) {
+    stdlagg[[i]]=(lagg_rm[[i]]-mean[[i]])/sd[[i]]
+  }
+  stdbog<-bog_rm
+  for (i in names(data_mixing_space)) {
+    stdbog[[i]]=(bog_rm[[i]]-mean[[i]])/sd[[i]]
+  }
+  stdsurf<-surf_rm
+  for (i in names(data_mixing_space)) {
+    stdsurf[[i]]=(surf_rm[[i]]-mean[[i]])/sd[[i]]
+  }
+  stdsub<-sub_rm
+  for (i in names(data_mixing_space)) {
+    stdsub[[i]]=(sub_rm[[i]]-mean[[i]])/sd[[i]]
+  }
+  stdprecip<-precip_rm
+  for (i in names(data_mixing_space)) {
+    stdprecip[[i]]=(precip_rm[[i]]-mean[[i]])/sd[[i]]
+  }
+  
+  stddata_mtx<-as.matrix(stddata)
+  stdlagg_mtx<-as.matrix(stdlagg)
+  stdbog_mtx<-as.matrix(stdbog)
+  stdsurf_mtx<-as.matrix(stdsurf)
+  stdsub_mtx<-as.matrix(stdsub)
+  stdprecip_mtx<-as.matrix(stdprecip)
+  
+  
+  # Projects Data onto Components
+  stream_projection<-data.frame(stddata_mtx %*% t(V))
+  
+  #projection for each endmember 
+  lagg_projection<-data.frame(stdlagg_mtx %*% t(V)) #lagg
+  bog_projection<-data.frame(stdbog_mtx %*% t(V))  #bog
+  surf_projection<-data.frame(stdsurf_mtx %*% t(V)) #surf
+  sub_projection<-data.frame(stdsub_mtx %*% t(V))   #sub
+  precip_projection<-data.frame(stdprecip_mtx %*% t(V))   #precip
+  
+  
+  #sub_projection_big<-which(sub_projection$X1 > 20)
+  #sub_projection_rmdbig<-sub_projection %>% filter(row_number() != sub_projection_big)
+  
+  
+  #lagg_projection_big<-which(lagg_projection$X1 > 15)
+  #lagg_projection_rmdbig<-lagg_projection %>% filter(row_number() != lagg_projection_big)
+  
+  #In the mixing space, use the V_named to draw the arrows,
+  #each column will be one arrow with the first row (coordiante along pc1) being the x of the endpoint and the second row being the y of the endpoint
+  stream_projection_season<-stream_projection%>%mutate(date=stream_tracers_yr$date)%>%mutate(season=stream_tracers_yr$season)%>%mutate(name=stream_tracers_yr$name)%>%mutate(DoY=yday(date)) 
+  lagg_projection_season<-lagg_projection%>%mutate(date=lagg_yr$date)%>%mutate(season=lagg_yr$season)%>%mutate(piezometer=lagg_yr$piezometer)%>%mutate(DoY=yday(date))
+  bog_projection_season<-bog_projection%>%mutate(date=bog_yr$date)%>%mutate(season=bog_yr$season)%>%mutate(piezometer=bog_yr$piezometer)%>%mutate(DoY=yday(date)) 
+  surf_projection_season<-surf_projection%>%mutate(date=surf_yr$date)%>%mutate(season=surf_yr$season)%>%mutate(name=surf_yr$name)%>%mutate(DoY=yday(date)) 
+  sub_projection_season<-sub_projection%>%mutate(date=sub_yr$date)%>%mutate(season=sub_yr$season)%>%mutate(name=sub_yr$name)%>%mutate(DoY=yday(date)) 
+  precip_projection_season<-precip_projection%>%mutate(date=precip_yr$date)%>%mutate(season=precip_yr$season)%>%mutate(DoY=yday(date)) 
+  
+  precip_projection_season$location<-"precip"
+  
+  
+  
+  arrows_df <- data.frame(
+    variable = rep(colnames(V_named), each = 1),
+    PC1 = as.vector(V_named[1, ]),
+    PC2 = as.vector(V_named[2, ])
+  )
+  
+  
+  lagg_projection_season<-lagg_projection_season %>%
+    rename(location = piezometer)
+  
+  bog_projection_season<-bog_projection_season %>%
+    rename(location = piezometer)
+  
+  surf_projection_season<-surf_projection_season %>%
+    rename(location = name)
+  
+  sub_projection_season<-sub_projection_season %>%
+    rename(location = name)
+  
+  stream_projection_season<-stream_projection_season %>%
+    rename(location = name)
+  
+  
+  #for (col in 1:7){
+    
+   # distance_lagg<-abs(lagg_yr[,col])-lagg_projection_season[,1])
+  
+   # distance_bog<-abs(bog_yr-bog_projection_season)
+  
+    # distance_surf<-surf_projection_season %>%mutate(distance=abs(surf_projection_season-surf_yr))
+  
+   # distance_sub<-abs(sub_projection_season-sub_yr)
+  
+   # distance_stream<-abs(stream_projection_season-stream_tracers_yr)
+#  }
+  
+  
+  # Formats distances into percents
+  for (i in 1:columns) {
+    distance[[i]]<-sprintf("%1.2f%%",d[[i]]/ends[[i]]*100) #f%%: a floating number with percentage sign
+  }
+```
+
+
+
+
+
+
+``` {r residual_plot }
+
+library(ggplot2)
+library(dplyr)
+library(broom)
+
+#residual2_combined_stf_edited<-residual2_combined_stf %>%
+#  filter(mn_residual <= -0.005)
+
+#residual1_combined_stf<-residual2_combined_stf_edited
+residual1_combined_stf<-residual1_combined_stf
+c_stf <- "ca_stf"
+c_residual <- "ca_residual"
+
+season_lm <- residual1_combined_stf %>% 
+  group_by(season_stf) %>%
+  do(
+    model = list(lm(reformulate(c_stf, c_residual), data = .)),
+    tidy_model = list(broom::tidy(lm(reformulate(c_stf, c_residual), data = .))),
+    glance_model = list(broom::glance(lm(reformulate(c_stf, c_residual), data = .)))
+  ) %>%
+  mutate(
+    intercept = sapply(tidy_model, function(x) x$estimate[1]),
+    slope = sapply(tidy_model, function(x) x$estimate[2]),
+    r_squared = sapply(glance_model, function(x) x$r.squared),
+    p_value = sapply(glance_model, function(x) x$p.value),
+    eq_label = paste0(
+      "β = ", round(slope, 2), ", ",
+      "R² = ", round(r_squared, 2), ", ",
+      ifelse(p_value < 0.05, "p < 0.05", paste0("p = ", format(p_value, scientific = TRUE, digits = 2)))
+    )
+  )
+
+
+
+season_lm <- season_lm %>%
+  mutate(
+    x_pos = case_when(
+      season_stf == "Freshet" ~ max(residual1_combined_stf[[c_stf]]) * 0.7,
+      season_stf == "rest of Melt" ~ max(residual1_combined_stf[[c_stf]]) * 0.7,
+      season_stf == "Growing" ~ max(residual1_combined_stf[[c_stf]]) * 0.7,
+      season_stf == "Dormant" ~ max(residual1_combined_stf[[c_stf]]) * 0.7
+    ),
+    y_pos = case_when(
+      season_stf == "Freshet" ~ max(residual1_combined_stf[[c_residual]]),
+      season_stf == "rest of Melt" ~ max(residual1_combined_stf[[c_residual]])*0.9,
+      season_stf == "Growing" ~ max(residual1_combined_stf[[c_residual]]) * (0.8),
+      season_stf == "Dormant" ~ max(residual1_combined_stf[[c_residual]]) * (0.7)
+    )
+  )
+
+p <- ggplot(residual1_combined_stf, aes(x = !!sym(c_stf), y = !!sym(c_residual), color = season_stf)) +
+  geom_point(size = 5, alpha = 0.6) +
+  labs(x = "Mn", y = "Mn residual", color = " ") +
+  theme_classic() +
+  scale_color_manual(values = c("Freshet" = "skyblue", "rest of Melt" = "blue", "Growing" = "darkgreen", "Dormant" = "darkgrey")) +
+  theme(
+    text = element_text(family = "Times New Roman", size = 16),
+    legend.text = element_text(family = "Times New Roman", size = 16),
+    legend.title = element_text(family = "Times New Roman", size = 16),
+    axis.title.x = element_text(family = "Times New Roman", size = 16),
+    axis.title.y = element_text(family = "Times New Roman", size = 16),
+    axis.text.x = element_text(family = "Times New Roman", size = 16),
+    axis.text.y = element_text(family = "Times New Roman", size = 16)
+  ) +
+  geom_smooth(method = "lm", se = FALSE, aes(group = season_stf)) +
+  geom_text(
+    data = season_lm,
+    aes(x = x_pos, y = y_pos, label = eq_label, color = season_stf),
+    hjust = 0, vjust = 1,
+    family = "Times New Roman", size = 7
+  )+ggtitle("2D")
+
+
+print(p)
+
+
+
+```
+
