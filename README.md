@@ -1,2 +1,2 @@
 # EMMA
-Updates on EMMA project on MEF
+Updates on EMMA project at MEF
